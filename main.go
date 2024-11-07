@@ -36,8 +36,8 @@ func main() {
 	pflag.StringVar(&apiToken, "api-token", "", "NetBox API token")
 	pflag.StringVar(&apiTokenFile, "api-token-file", "", "Path to the NetBox API token file")
 	pflag.StringVar(&dnsServers, "dns-servers", "", "Comma-separated list of DNS servers")
-	pflag.StringVar(&reportFile, "report-file", "discrepancies.txt", "File to write the report")
-	pflag.StringVar(&reportFormat, "report-format", "table", "Format of the report (table, csv, json)")
+	pflag.StringVar(&reportFile, "report-file", "discrepancies.json", "File to write the JSON report")
+	pflag.StringVar(&reportFormat, "report-format", "json", "Format of the report (json)")
 	pflag.StringVar(&nsupdateFile, "nsupdate-file", "nsupdate.txt", "File to write nsupdate commands")
 	pflag.BoolVar(&ignoreSerialNumbers, "ignore-serial-numbers", false, "Ignore serial numbers when comparing SOA records")
 	pflag.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
@@ -145,7 +145,7 @@ func main() {
 
 	if dnsServers != "" {
 		// DNS servers are explicitly configured via flags/env/config
-		servers = splitAndTrim(dnsServers)
+		servers = splitAndTrim(dnsServers, ",") // Using comma as delimiter
 		level.Info(logger).Log("msg", "Using configured DNS servers", "servers", servers)
 	} else {
 		// Fetch nameservers from NetBox API
@@ -178,6 +178,29 @@ func main() {
 		level.Info(logger).Log("msg", "Authoritative DNS servers extracted", "servers", servers)
 	}
 
+	// Fetch all Zones to build a map of zone_name -> default_ttl
+	zonesEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/zones/")
+	zones, err := getZones(zonesEndpoint, apiToken, logger)
+	if err != nil {
+		level.Error(logger).Log("msg", "Failed to fetch zones from NetBox", "err", err)
+		os.Exit(1)
+	}
+
+	if len(zones) == 0 {
+		level.Error(logger).Log("msg", "No zones found in NetBox")
+		os.Exit(1)
+	}
+
+	zoneTTLMap := make(map[string]int)
+	for _, zone := range zones {
+		if zone.DefaultTTL != nil {
+			zoneTTLMap[zone.Name] = *zone.DefaultTTL
+		} else {
+			zoneTTLMap[zone.Name] = 3600 // Fallback to a common default TTL if DefaultTTL is nil
+			level.Warn(logger).Log("msg", "Zone DefaultTTL is not set, using fallback", "zone", zone.Name)
+		}
+	}
+
 	// Construct the Records API endpoint
 	recordsEndpoint := resolveURL(parsedBaseURL, recordsAPIPath)
 
@@ -191,10 +214,10 @@ func main() {
 	level.Info(logger).Log("msg", "Fetched DNS records from NetBox", "count", len(records))
 
 	// Validate Records
-	discrepancies := validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers)
+	discrepancies, successes := validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneTTLMap)
 
 	// Generate Report
-	err = generateReport(discrepancies, reportFile, reportFormat, logger)
+	err = generateReport(discrepancies, successes, reportFile, reportFormat, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to generate report", "err", err)
 		os.Exit(1)
@@ -210,13 +233,14 @@ func main() {
 	level.Info(logger).Log("msg", "DNS validation completed")
 }
 
+// parseLogLevel parses the log level string into a log.Option.
 func parseLogLevel(levelStr string) level.Option {
 	switch strings.ToLower(levelStr) {
 	case "debug":
 		return level.AllowDebug()
 	case "info":
 		return level.AllowInfo()
-	case "warn":
+	case "warn", "warning":
 		return level.AllowWarn()
 	case "error":
 		return level.AllowError()
@@ -225,7 +249,7 @@ func parseLogLevel(levelStr string) level.Option {
 	}
 }
 
-// resolveURL appends the given path to the base URL properly
+// resolveURL appends the given path to the base URL properly.
 func resolveURL(base *url.URL, relativePath string) string {
 	u := *base // copy
 	u.Path = path.Join(u.Path, relativePath)
