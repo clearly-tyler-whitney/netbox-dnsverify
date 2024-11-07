@@ -37,7 +37,7 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 }
 
 func writeTableReport(discrepancies []Discrepancy, file *os.File) error {
-	header := fmt.Sprintf("%-30s %-8s %-20s %-20s %-20s %-30s\n", "FQDN", "Type", "Expected", "Actual", "Server", "Message")
+	header := fmt.Sprintf("%-40s %-8s %-30s %-30s %-30s %-30s\n", "FQDN", "Type", "Expected", "Actual", "Server", "Message")
 	_, err := file.WriteString(header)
 	if err != nil {
 		return err
@@ -45,7 +45,7 @@ func writeTableReport(discrepancies []Discrepancy, file *os.File) error {
 
 	for _, d := range discrepancies {
 		actual := strings.Join(d.Actual, ", ")
-		line := fmt.Sprintf("%-30s %-8s %-20s %-20s %-20s %-30s\n",
+		line := fmt.Sprintf("%-40s %-8s %-30s %-30s %-30s %-30s\n",
 			d.FQDN, d.RecordType, d.Expected, actual, d.Server, d.Message)
 		_, err := file.WriteString(line)
 		if err != nil {

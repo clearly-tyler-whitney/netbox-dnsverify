@@ -13,6 +13,9 @@ import (
 	"github.com/go-kit/log/level"
 )
 
+// Existing structs in types.go
+
+// Fetch DNS Records from NetBox
 func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -70,6 +73,51 @@ func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
 	return apiResponse.Results, nil
 }
 
+// Fetch Nameservers and their Zones from NetBox
+func getNameservers(apiURL, token string, logger log.Logger) ([]Nameserver, error) {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Token "+token)
+
+	// Log the outgoing request
+	level.Debug(logger).Log("msg", "Sending request to NetBox for Nameservers", "method", req.Method, "url", req.URL.String())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		level.Error(logger).Log("msg", "Non-OK HTTP response from NetBox Nameservers API", "status_code", resp.StatusCode, "body", string(bodyBytes))
+		return nil, fmt.Errorf("NetBox Nameservers API returned status code %d", resp.StatusCode)
+	}
+
+	// Log the response body at debug level
+	level.Debug(logger).Log("msg", "Received Nameservers response from NetBox")
+
+	var nsResponse NameserversResponse
+	err = json.Unmarshal(bodyBytes, &nsResponse)
+	if err != nil {
+		// Log the error and the response body for debugging
+		level.Error(logger).Log("msg", "Failed to parse JSON Nameservers response from NetBox", "err", err)
+		return nil, err
+	}
+
+	return nsResponse.Results, nil
+}
+
+// Fetch all DNS Records with pagination
 func getAllDNSRecords(baseURL, token string, logger log.Logger) ([]Record, error) {
 	var allRecords []Record
 	offset := 0
@@ -107,4 +155,44 @@ func getAllDNSRecords(baseURL, token string, logger log.Logger) ([]Record, error
 		offset += limit
 	}
 	return allRecords, nil
+}
+
+// Fetch all Nameservers with pagination (if needed)
+func getAllNameservers(baseURL, token string, logger log.Logger) ([]Nameserver, error) {
+	var allNameservers []Nameserver
+	offset := 0
+	limit := 50
+
+	// Parse the base URL
+	parsedBaseURL, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %v", err)
+	}
+
+	for {
+		// Clone the parsed URL to avoid modifying the original
+		parsedURL := *parsedBaseURL
+
+		// Set query parameters
+		query := parsedURL.Query()
+		query.Set("limit", fmt.Sprintf("%d", limit))
+		query.Set("offset", fmt.Sprintf("%d", offset))
+		parsedURL.RawQuery = query.Encode()
+
+		apiURL := parsedURL.String()
+
+		// Add debug log for the outgoing request URL
+		level.Debug(logger).Log("msg", "Requesting NetBox Nameservers API", "url", apiURL)
+
+		nameservers, err := getNameservers(apiURL, token, logger)
+		if err != nil {
+			return nil, err
+		}
+		allNameservers = append(allNameservers, nameservers...)
+		if len(nameservers) < limit {
+			break
+		}
+		offset += limit
+	}
+	return allNameservers, nil
 }

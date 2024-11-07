@@ -27,7 +27,6 @@ func generateNSUpdateScript(discrepancies []Discrepancy, nsupdateFile string, lo
 		switch strings.ToUpper(d.RecordType) {
 		case "A", "CNAME", "PTR", "NS", "SOA":
 			// Generate appropriate nsupdate commands based on discrepancy
-			// Here, we assume that discrepancies only include failed validations
 			level.Debug(logger).Log("msg", "Generating nsupdate command", "fqdn", d.FQDN, "type", d.RecordType, "server", d.Server, "message", d.Message)
 			nsupdateCmds := []string{
 				fmt.Sprintf("update delete %s %s", d.FQDN, d.RecordType),

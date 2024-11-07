@@ -227,7 +227,8 @@ func validatePTRRecord(ip string, expectedFQDN string, servers []string, logger 
 	return discrepancies
 }
 
-func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger) []Discrepancy {
+// Modified validateAllRecords to accept nameservers
+func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver) []Discrepancy {
 	var wg sync.WaitGroup
 	discrepanciesChan := make(chan []Discrepancy, len(records)*len(servers)*2) // Adjusted buffer size
 
@@ -241,11 +242,35 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 		}
 	}
 
+	// Create a map of zone to nameservers for quick lookup
+	zoneToNameservers := make(map[string][]string)
+	for _, ns := range nameservers {
+		for _, zone := range ns.Zones {
+			zoneName := zone.Name
+			zoneToNameservers[zoneName] = append(zoneToNameservers[zoneName], ns.Name)
+		}
+	}
+
 	for _, record := range records {
 		wg.Add(1)
 		go func(rec Record) {
 			defer wg.Done()
-			discrepancies := validateRecord(rec, servers, ignoreSerialNumbers, logger)
+			// Determine which nameservers are authoritative for this record's zone
+			var recordServers []string
+			if rec.ZoneName != "" {
+				recordServers = zoneToNameservers[rec.ZoneName]
+				if len(recordServers) == 0 {
+					// If no specific nameservers found for the zone, use all servers
+					recordServers = servers
+					level.Warn(logger).Log("msg", "No nameservers found for zone", "zone", rec.ZoneName, "using all servers")
+				}
+			} else {
+				// If no zone information, use all servers
+				recordServers = servers
+				level.Warn(logger).Log("msg", "No zone information for record", "fqdn", rec.FQDN, "using all servers")
+			}
+
+			discrepancies := validateRecord(rec, recordServers, ignoreSerialNumbers, logger)
 			if len(discrepancies) > 0 {
 				discrepanciesChan <- discrepancies
 			}
@@ -263,7 +288,7 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 				} else {
 					if !validatedPTRs[ptrName] {
 						validatedPTRs[ptrName] = true
-						ptrDiscrepancies := validatePTRRecord(rec.Value, expectedFQDN, servers, logger)
+						ptrDiscrepancies := validatePTRRecord(rec.Value, expectedFQDN, recordServers, logger)
 						if len(ptrDiscrepancies) > 0 {
 							discrepanciesChan <- ptrDiscrepancies
 						}

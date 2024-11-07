@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"os"
-	"strings"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -51,18 +50,6 @@ func LoadConfig(logger log.Logger) *Config {
 	}
 
 	return config
-}
-
-func splitAndTrim(s string, sep string) []string {
-	parts := strings.Split(s, sep)
-	var result []string
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 func mergeConfigs(base, override *Config) {
