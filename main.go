@@ -2,19 +2,22 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 func main() {
 	var (
+		configFile          string
 		apiURL              string
 		apiToken            string
+		apiTokenFile        string
 		dnsServers          string
 		reportFile          string
 		reportFormat        string
@@ -23,19 +26,89 @@ func main() {
 		logLevel            string
 	)
 
-	flag.StringVar(&apiURL, "api-url", "", "NetBox API URL")
-	flag.StringVar(&apiToken, "api-token", "", "NetBox API token")
-	flag.StringVar(&dnsServers, "dns-servers", "", "Comma-separated list of DNS servers")
-	flag.StringVar(&reportFile, "report-file", "discrepancies.txt", "File to write the report")
-	flag.StringVar(&reportFormat, "report-format", "table", "Format of the report (table, csv, json)")
-	flag.StringVar(&nsupdateFile, "nsupdate-file", "nsupdate.txt", "File to write nsupdate commands")
-	flag.BoolVar(&ignoreSerialNumbers, "ignore-serial-numbers", false, "Ignore serial numbers when comparing SOA records")
-	flag.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	flag.Parse()
+	// Define command-line flags
+	pflag.StringVar(&configFile, "config", "", "Path to the configuration file")
+	pflag.StringVar(&apiURL, "api-url", "", "NetBox API URL")
+	pflag.StringVar(&apiToken, "api-token", "", "NetBox API token")
+	pflag.StringVar(&apiTokenFile, "api-token-file", "", "Path to the NetBox API token file")
+	pflag.StringVar(&dnsServers, "dns-servers", "", "Comma-separated list of DNS servers")
+	pflag.StringVar(&reportFile, "report-file", "discrepancies.txt", "File to write the report")
+	pflag.StringVar(&reportFormat, "report-format", "table", "Format of the report (table, csv, json)")
+	pflag.StringVar(&nsupdateFile, "nsupdate-file", "nsupdate.txt", "File to write nsupdate commands")
+	pflag.BoolVar(&ignoreSerialNumbers, "ignore-serial-numbers", false, "Ignore serial numbers when comparing SOA records")
+	pflag.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	pflag.Parse()
+
+	// Initialize Viper
+	viper.SetConfigType("yaml")
+	viper.SetConfigName("config") // Default config file name is 'config.yaml'
+	viper.AddConfigPath(".")      // Search in current directory
+	viper.AddConfigPath("/etc/netbox-dnsverify/")
+
+	// If a config file is specified, use it
+	if configFile != "" {
+		viper.SetConfigFile(configFile)
+	}
+
+	// Read the config file if available
+	if err := viper.ReadInConfig(); err != nil {
+		level.Warn(log.NewNopLogger()).Log("msg", "No config file found, using defaults and other sources", "err", err)
+	} else {
+		level.Info(log.NewNopLogger()).Log("msg", "Using config file", "file", viper.ConfigFileUsed())
+	}
+
+	// Bind environment variables
+	viper.SetEnvPrefix("DNSVERIFY")
+	viper.AutomaticEnv()
+
+	// Override command-line flags with environment variables
+	// (Environment variables have higher priority than flags)
+	viper.BindEnv("api_url")
+	viper.BindEnv("api_token")
+	viper.BindEnv("api_token_file")
+	viper.BindEnv("dns_servers")
+	viper.BindEnv("report_file")
+	viper.BindEnv("report_format")
+	viper.BindEnv("nsupdate_file")
+	viper.BindEnv("ignore_serial_numbers")
+	viper.BindEnv("log_level")
+
+	// Set default values from flags
+	viper.SetDefault("api_url", apiURL)
+	viper.SetDefault("api_token", apiToken)
+	viper.SetDefault("api_token_file", apiTokenFile)
+	viper.SetDefault("dns_servers", dnsServers)
+	viper.SetDefault("report_file", reportFile)
+	viper.SetDefault("report_format", reportFormat)
+	viper.SetDefault("nsupdate_file", nsupdateFile)
+	viper.SetDefault("ignore_serial_numbers", ignoreSerialNumbers)
+	viper.SetDefault("log_level", logLevel)
+
+	// Now, override flags with environment variables if they are set
+	// Environment variables have higher priority
+	apiURL = viper.GetString("api_url")
+	apiToken = viper.GetString("api_token")
+	apiTokenFile = viper.GetString("api_token_file")
+	dnsServers = viper.GetString("dns_servers")
+	reportFile = viper.GetString("report_file")
+	reportFormat = viper.GetString("report_format")
+	nsupdateFile = viper.GetString("nsupdate_file")
+	ignoreSerialNumbers = viper.GetBool("ignore_serial_numbers")
+	logLevel = viper.GetString("log_level")
+
+	// Load NetBox API token from file if specified
+	if apiTokenFile != "" {
+		tokenBytes, err := os.ReadFile(apiTokenFile)
+		if err != nil {
+			fmt.Printf("Failed to read API token file: %v\n", err)
+			os.Exit(1)
+		}
+		apiToken = strings.TrimSpace(string(tokenBytes))
+	}
 
 	if apiURL == "" || apiToken == "" || dnsServers == "" {
 		fmt.Println("api-url, api-token, and dns-servers are required")
-		flag.Usage()
+		pflag.Usage()
 		os.Exit(1)
 	}
 

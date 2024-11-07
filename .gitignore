@@ -26,3 +26,5 @@ go.work.sum
 .~lock.report.txt#
 netbox-dnsverify
 *.txt
+config.yaml
+discrepancies.csv
