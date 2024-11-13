@@ -14,7 +14,7 @@ import (
 )
 
 // Fetch DNS Records from NetBox with filters
-func getAllDNSRecords(baseURL, token string, logger log.Logger, zoneFilter, viewFilter string) ([]Record, error) {
+func getAllDNSRecords(baseURL, token string, logger log.Logger, zoneFilter, viewFilter string, zonesToValidate []string) ([]Record, error) {
 	var allRecords []Record
 	offset := 0
 	limit := 50
@@ -39,6 +39,10 @@ func getAllDNSRecords(baseURL, token string, logger log.Logger, zoneFilter, view
 		}
 		if viewFilter != "" {
 			query.Set("zone__view__name", viewFilter)
+		}
+		if len(zonesToValidate) > 0 {
+			// Filter by zones from nameserver's zones
+			query.Set("zone__name__in", strings.Join(zonesToValidate, ","))
 		}
 		parsedURL.RawQuery = query.Encode()
 

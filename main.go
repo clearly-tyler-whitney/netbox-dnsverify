@@ -25,12 +25,13 @@ func main() {
 		reportFormat        string
 		nsupdateFile        string
 		ignoreSerialNumbers bool
+		validateSOA         string // New flag for SOA validation
 		logLevel            string
+		logFormat           string
 		zoneFilter          string
 		viewFilter          string
 		nameserverFilter    string
 	)
-
 	// Define command-line flags
 	pflag.StringVar(&configFile, "config", "", "Path to the configuration file (default \"./config.yaml\")")
 	pflag.StringVar(&apiURL, "api-url", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
@@ -41,7 +42,9 @@ func main() {
 	pflag.StringVar(&reportFormat, "report-format", "table", "Format of the report (table, csv, json)")
 	pflag.StringVar(&nsupdateFile, "nsupdate-file", "nsupdate.txt", "File to write nsupdate commands")
 	pflag.BoolVar(&ignoreSerialNumbers, "ignore-serial-numbers", false, "Ignore serial numbers when comparing SOA records")
+	pflag.StringVar(&validateSOA, "validate-soa", "false", "SOA record validation ('false', 'true', or 'only')")
 	pflag.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	pflag.StringVar(&logFormat, "log-format", "logfmt", "Log format (logfmt or json)")
 	pflag.StringVar(&zoneFilter, "zone", "", "Filter validations by zone name")
 	pflag.StringVar(&viewFilter, "view", "", "Filter validations by view name")
 	pflag.StringVar(&nameserverFilter, "nameserver", "", "Filter validations by nameserver")
@@ -78,7 +81,9 @@ func main() {
 	viper.BindEnv("report_format")
 	viper.BindEnv("nsupdate_file")
 	viper.BindEnv("ignore_serial_numbers")
+	viper.BindEnv("validate_soa")
 	viper.BindEnv("log_level")
+	viper.BindEnv("log_format")
 	viper.BindEnv("nameservers_api_path")
 	viper.BindEnv("records_api_path")
 	viper.BindEnv("zone")
@@ -94,7 +99,9 @@ func main() {
 	viper.SetDefault("report_format", reportFormat)
 	viper.SetDefault("nsupdate_file", nsupdateFile)
 	viper.SetDefault("ignore_serial_numbers", ignoreSerialNumbers)
+	viper.SetDefault("validate_soa", validateSOA)
 	viper.SetDefault("log_level", logLevel)
+	viper.SetDefault("log_format", logFormat)
 	viper.SetDefault("zone", zoneFilter)
 	viper.SetDefault("view", viewFilter)
 	viper.SetDefault("nameserver", nameserverFilter)
@@ -108,7 +115,9 @@ func main() {
 	reportFormat = viper.GetString("report_format")
 	nsupdateFile = viper.GetString("nsupdate_file")
 	ignoreSerialNumbers = viper.GetBool("ignore_serial_numbers")
+	validateSOA = viper.GetString("validate_soa")
 	logLevel = viper.GetString("log_level")
+	logFormat = viper.GetString("log_format")
 	zoneFilter = viper.GetString("zone")
 	viewFilter = viper.GetString("view")
 	nameserverFilter = viper.GetString("nameserver")
@@ -140,7 +149,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout))
+	// Set up logger with configurable format
+	var logger log.Logger
+	switch strings.ToLower(logFormat) {
+	case "json":
+		logger = log.NewJSONLogger(log.NewSyncWriter(os.Stdout))
+	default:
+		logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout))
+	}
 	logger = level.NewFilter(logger, parseLogLevel(logLevel))
 	logger = log.With(logger, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
 
@@ -184,11 +200,26 @@ func main() {
 		level.Info(logger).Log("msg", "Authoritative DNS servers extracted", "servers", servers)
 	}
 
+	// Determine zones to validate based on nameservers if nameserverFilter is used
+	var zonesToValidate []string
+	if nameserverFilter != "" {
+		zonesSet := make(map[string]bool)
+		for _, ns := range nameservers {
+			for _, zone := range ns.Zones {
+				zonesSet[zone.Name] = true
+			}
+		}
+		for zone := range zonesSet {
+			zonesToValidate = append(zonesToValidate, zone)
+		}
+		level.Info(logger).Log("msg", "Zones to validate derived from nameservers", "zones", zonesToValidate)
+	}
+
 	// Construct the Records API endpoint
 	recordsEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/records/")
 
 	// Fetch DNS Records
-	records, err := getAllDNSRecords(recordsEndpoint, apiToken, logger, zoneFilter, viewFilter)
+	records, err := getAllDNSRecords(recordsEndpoint, apiToken, logger, zoneFilter, viewFilter, zonesToValidate)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to get DNS records from NetBox", "err", err)
 		os.Exit(1)
@@ -196,8 +227,22 @@ func main() {
 
 	level.Info(logger).Log("msg", "Fetched DNS records from NetBox", "count", len(records))
 
+	// Determine SOA validation mode
+	soaValidationMode := parseSOAValidationMode(validateSOA)
+
 	// Validate Records
-	discrepancies := validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneFilter, viewFilter)
+	var discrepancies []Discrepancy
+
+	if soaValidationMode != "only" {
+		// Validate all records except SOA
+		discrepancies = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneFilter, viewFilter)
+	}
+
+	if soaValidationMode != "false" {
+		// Validate SOA records separately
+		soaDiscrepancies := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameservers)
+		discrepancies = append(discrepancies, soaDiscrepancies...)
+	}
 
 	// Generate Report
 	err = generateReport(discrepancies, reportFile, reportFormat, logger)
@@ -228,6 +273,17 @@ func parseLogLevel(levelStr string) level.Option {
 		return level.AllowError()
 	default:
 		return level.AllowInfo()
+	}
+}
+
+func parseSOAValidationMode(mode string) string {
+	switch strings.ToLower(mode) {
+	case "true":
+		return "true"
+	case "only":
+		return "only"
+	default:
+		return "false"
 	}
 }
 

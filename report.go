@@ -24,60 +24,49 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 	}
 	defer file.Close()
 
-	switch strings.ToLower(reportFormat) {
-	case "table":
-		return writeTableReport(discrepancies, file)
-	case "csv":
-		return writeCSVReport(discrepancies, file)
+	switch reportFormat {
 	case "json":
-		return writeJSONReport(discrepancies, file)
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(discrepancies)
+	case "csv":
+		// Adjust CSV generation to handle interface{} types
+		writer := csv.NewWriter(file)
+		defer writer.Flush()
+
+		header := []string{"FQDN", "Type", "Expected", "Actual", "Server", "Message"}
+		err := writer.Write(header)
+		if err != nil {
+			return err
+		}
+
+		for _, d := range discrepancies {
+			expectedStr := stringifyExpectedActual(d.Expected)
+			actualStr := stringifyExpectedActual(d.Actual)
+			record := []string{d.FQDN, d.RecordType, expectedStr, actualStr, d.Server, d.Message}
+			err := writer.Write(record)
+			if err != nil {
+				return err
+			}
+		}
 	default:
-		return fmt.Errorf("unknown report format: %s", reportFormat)
-	}
-}
-
-func writeTableReport(discrepancies []Discrepancy, file *os.File) error {
-	header := fmt.Sprintf("%-40s %-8s %-30s %-30s %-30s %-30s\n", "FQDN", "Type", "Expected", "Actual", "Server", "Message")
-	_, err := file.WriteString(header)
-	if err != nil {
-		return err
-	}
-
-	for _, d := range discrepancies {
-		actual := strings.Join(d.Actual, ", ")
-		line := fmt.Sprintf("%-40s %-8s %-30s %-30s %-30s %-30s\n",
-			d.FQDN, d.RecordType, d.Expected, actual, d.Server, d.Message)
-		_, err := file.WriteString(line)
-		if err != nil {
-			return err
+		// Default to table format
+		for _, d := range discrepancies {
+			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nServer: %s\nMessage: %s\n\n",
+				d.FQDN, d.RecordType, d.Expected, d.Actual, d.Server, d.Message)
 		}
 	}
+
 	return nil
 }
 
-func writeCSVReport(discrepancies []Discrepancy, file *os.File) error {
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	header := []string{"FQDN", "Type", "Expected", "Actual", "Server", "Message"}
-	err := writer.Write(header)
-	if err != nil {
-		return err
+func stringifyExpectedActual(value interface{}) string {
+	switch v := value.(type) {
+	case []string:
+		return strings.Join(v, ", ")
+	case SOARecord:
+		return fmt.Sprintf("%+v", v)
+	default:
+		return fmt.Sprintf("%v", v)
 	}
-
-	for _, d := range discrepancies {
-		actual := strings.Join(d.Actual, "; ")
-		record := []string{d.FQDN, d.RecordType, d.Expected, actual, d.Server, d.Message}
-		err := writer.Write(record)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeJSONReport(discrepancies []Discrepancy, file *os.File) error {
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(discrepancies)
 }

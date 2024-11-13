@@ -12,6 +12,7 @@ type Record struct {
 	Name        string     `json:"name"`
 	FQDN        string     `json:"fqdn"`
 	Value       string     `json:"value"`
+	TTL         int        `json:"ttl"`
 	Zone        *Zone      `json:"zone"`
 	ZoneName    string     // Extracted from Zone.Name
 	ViewName    string     // Extracted from Zone.View.Name
@@ -21,6 +22,16 @@ type Record struct {
 	Status      string     `json:"status"`
 	Description string     `json:"description"`
 	// Add other fields as needed
+}
+
+type SOARecord struct {
+	MName   string `json:"mname"`
+	RName   string `json:"rname"`
+	Serial  uint32 `json:"serial"`
+	Refresh uint32 `json:"refresh"`
+	Retry   uint32 `json:"retry"`
+	Expire  uint32 `json:"expire"`
+	Minimum uint32 `json:"minimum"`
 }
 
 type Zone struct {
