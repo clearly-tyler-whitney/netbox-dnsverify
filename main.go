@@ -33,27 +33,36 @@ func main() {
 		nameserverFilter     string
 		recordSuccessful     bool
 		successfulReportFile string
+		showHelp             bool
 	)
 
-	// Define command-line flags
-	pflag.StringVar(&configFile, "config", "", "Path to the configuration file (default \"./config.yaml\")")
-	pflag.StringVar(&apiURL, "api-url", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
-	pflag.StringVar(&apiToken, "api-token", "", "NetBox API token")
-	pflag.StringVar(&apiTokenFile, "api-token-file", "", "Path to the NetBox API token file")
-	pflag.StringVar(&dnsServers, "dns-servers", "", "Comma-separated list of DNS servers")
-	pflag.StringVar(&reportFile, "report-file", "discrepancies.txt", "File to write the report")
-	pflag.StringVar(&reportFormat, "report-format", "table", "Format of the report (table, csv, json)")
-	pflag.StringVar(&nsupdateFile, "nsupdate-file", "nsupdate.txt", "File to write nsupdate commands")
-	pflag.BoolVar(&ignoreSerialNumbers, "ignore-serial-numbers", false, "Ignore serial numbers when comparing SOA records")
-	pflag.StringVar(&validateSOA, "validate-soa", "false", "SOA record validation ('false', 'true', or 'only')")
-	pflag.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	pflag.StringVar(&logFormat, "log-format", "logfmt", "Log format (logfmt or json)")
-	pflag.StringVar(&zoneFilter, "zone", "", "Filter validations by zone name")
-	pflag.StringVar(&viewFilter, "view", "", "Filter validations by view name")
-	pflag.StringVar(&nameserverFilter, "nameserver", "", "Filter validations by nameserver")
-	pflag.BoolVar(&recordSuccessful, "record-successful", false, "Record successful validations")
-	pflag.StringVar(&successfulReportFile, "successful-report-file", "successful_validations.json", "File to write the successful validations report")
+	// Define command-line flags with short versions
+	pflag.StringVarP(&configFile, "config", "c", "", "Path to the configuration file (default: ./config.yaml)")
+	pflag.StringVarP(&apiURL, "api-url", "u", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
+	pflag.StringVarP(&apiToken, "api-token", "t", "", "NetBox API token")
+	pflag.StringVarP(&apiTokenFile, "api-token-file", "T", "", "Path to the NetBox API token file")
+	pflag.StringVarP(&dnsServers, "dns-servers", "d", "", "Comma-separated list of DNS servers")
+	pflag.StringVarP(&reportFile, "report-file", "r", "discrepancies.txt", "File to write the discrepancy report")
+	pflag.StringVarP(&reportFormat, "report-format", "f", "table", "Format of the report (table, csv, json)")
+	pflag.StringVarP(&nsupdateFile, "nsupdate-file", "n", "nsupdate.txt", "File to write nsupdate commands")
+	pflag.BoolVarP(&ignoreSerialNumbers, "ignore-serial-numbers", "i", false, "Ignore serial numbers when comparing SOA records")
+	pflag.StringVarP(&validateSOA, "validate-soa", "s", "false", "SOA record validation ('false', 'true', or 'only')")
+	pflag.StringVarP(&logLevel, "log-level", "l", "info", "Log level (debug, info, warn, error)")
+	pflag.StringVarP(&logFormat, "log-format", "L", "logfmt", "Log format (logfmt or json)")
+	pflag.StringVarP(&zoneFilter, "zone", "z", "", "Filter validations by zone name")
+	pflag.StringVarP(&viewFilter, "view", "v", "", "Filter validations by view name")
+	pflag.StringVarP(&nameserverFilter, "nameserver", "N", "", "Filter validations by nameserver")
+	pflag.BoolVarP(&recordSuccessful, "record-successful", "R", false, "Record successful validations")
+	pflag.StringVarP(&successfulReportFile, "successful-report-file", "S", "successful_validations.json", "File to write successful validations report")
+	pflag.BoolVarP(&showHelp, "help", "h", false, "Display help message")
 	pflag.Parse()
+
+	// Show help message if requested
+	if showHelp {
+		fmt.Println("Usage of netbox-dnsverify:")
+		pflag.PrintDefaults()
+		os.Exit(0)
+	}
 
 	// Initialize Viper
 	viper.SetConfigType("yaml")
@@ -73,11 +82,12 @@ func main() {
 		level.Info(log.NewNopLogger()).Log("msg", "Using config file", "file", viper.ConfigFileUsed())
 	}
 
-	// Bind environment variables
+	// Bind environment variables (standardized names)
 	viper.SetEnvPrefix("DNSVERIFY")
 	viper.AutomaticEnv()
 
 	// Bind specific environment variables
+	viper.BindEnv("config")
 	viper.BindEnv("api_url")
 	viper.BindEnv("api_token")
 	viper.BindEnv("api_token_file")
@@ -89,15 +99,14 @@ func main() {
 	viper.BindEnv("validate_soa")
 	viper.BindEnv("log_level")
 	viper.BindEnv("log_format")
-	viper.BindEnv("nameservers_api_path")
-	viper.BindEnv("records_api_path")
 	viper.BindEnv("zone")
 	viper.BindEnv("view")
 	viper.BindEnv("nameserver")
 	viper.BindEnv("record_successful")
 	viper.BindEnv("successful_report_file")
 
-	// Set default values from flags
+	// Set default values from flags (lowest precedence)
+	viper.SetDefault("config", configFile)
 	viper.SetDefault("api_url", apiURL)
 	viper.SetDefault("api_token", apiToken)
 	viper.SetDefault("api_token_file", apiTokenFile)
@@ -115,7 +124,17 @@ func main() {
 	viper.SetDefault("record_successful", recordSuccessful)
 	viper.SetDefault("successful_report_file", successfulReportFile)
 
-	// Override flags with environment variables if they are set
+	// Override defaults with config file values (if any)
+	// (Viper does this automatically when reading the config file)
+
+	// Override config values with environment variables (if set)
+	// (Viper does this automatically when environment variables are bound)
+
+	// Override environment variables with command-line flags (highest precedence)
+	viper.BindPFlags(pflag.CommandLine)
+
+	// Extract final configuration values
+	configFile = viper.GetString("config")
 	apiURL = viper.GetString("api_url")
 	apiToken = viper.GetString("api_token")
 	apiTokenFile = viper.GetString("api_token_file")
@@ -134,7 +153,7 @@ func main() {
 	successfulReportFile = viper.GetString("successful_report_file")
 
 	// Load NetBox API token from file if specified
-	if apiTokenFile != "" {
+	if apiTokenFile != "" && apiToken == "" {
 		tokenBytes, err := os.ReadFile(apiTokenFile)
 		if err != nil {
 			fmt.Printf("Failed to read API token file: %v\n", err)
@@ -144,7 +163,7 @@ func main() {
 	}
 
 	if apiURL == "" || apiToken == "" {
-		fmt.Println("api-url and api-token are required")
+		fmt.Println("Error: --api-url and --api-token are required.")
 		pflag.Usage()
 		os.Exit(1)
 	}
