@@ -1,10 +1,10 @@
 // utils.go
 package main
 
-import "strings"
+import (
+	"strings"
+)
 
-// splitAndTrim splits a string by the given delimiter and trims whitespace from each part.
-// If delimiter is an empty string, it defaults to comma (,).
 func splitAndTrim(s string, delimiter ...string) []string {
 	delim := ","
 	if len(delimiter) > 0 && delimiter[0] != "" {

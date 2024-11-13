@@ -16,22 +16,25 @@ import (
 
 func main() {
 	var (
-		configFile          string
-		apiURL              string
-		apiToken            string
-		apiTokenFile        string
-		dnsServers          string
-		reportFile          string
-		reportFormat        string
-		nsupdateFile        string
-		ignoreSerialNumbers bool
-		validateSOA         string // New flag for SOA validation
-		logLevel            string
-		logFormat           string
-		zoneFilter          string
-		viewFilter          string
-		nameserverFilter    string
+		configFile           string
+		apiURL               string
+		apiToken             string
+		apiTokenFile         string
+		dnsServers           string
+		reportFile           string
+		reportFormat         string
+		nsupdateFile         string
+		ignoreSerialNumbers  bool
+		validateSOA          string
+		logLevel             string
+		logFormat            string
+		zoneFilter           string
+		viewFilter           string
+		nameserverFilter     string
+		recordSuccessful     bool
+		successfulReportFile string
 	)
+
 	// Define command-line flags
 	pflag.StringVar(&configFile, "config", "", "Path to the configuration file (default \"./config.yaml\")")
 	pflag.StringVar(&apiURL, "api-url", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
@@ -48,6 +51,8 @@ func main() {
 	pflag.StringVar(&zoneFilter, "zone", "", "Filter validations by zone name")
 	pflag.StringVar(&viewFilter, "view", "", "Filter validations by view name")
 	pflag.StringVar(&nameserverFilter, "nameserver", "", "Filter validations by nameserver")
+	pflag.BoolVar(&recordSuccessful, "record-successful", false, "Record successful validations")
+	pflag.StringVar(&successfulReportFile, "successful-report-file", "successful_validations.json", "File to write the successful validations report")
 	pflag.Parse()
 
 	// Initialize Viper
@@ -89,6 +94,8 @@ func main() {
 	viper.BindEnv("zone")
 	viper.BindEnv("view")
 	viper.BindEnv("nameserver")
+	viper.BindEnv("record_successful")
+	viper.BindEnv("successful_report_file")
 
 	// Set default values from flags
 	viper.SetDefault("api_url", apiURL)
@@ -105,6 +112,8 @@ func main() {
 	viper.SetDefault("zone", zoneFilter)
 	viper.SetDefault("view", viewFilter)
 	viper.SetDefault("nameserver", nameserverFilter)
+	viper.SetDefault("record_successful", recordSuccessful)
+	viper.SetDefault("successful_report_file", successfulReportFile)
 
 	// Override flags with environment variables if they are set
 	apiURL = viper.GetString("api_url")
@@ -121,6 +130,8 @@ func main() {
 	zoneFilter = viper.GetString("zone")
 	viewFilter = viper.GetString("view")
 	nameserverFilter = viper.GetString("nameserver")
+	recordSuccessful = viper.GetBool("record_successful")
+	successfulReportFile = viper.GetString("successful_report_file")
 
 	// Load NetBox API token from file if specified
 	if apiTokenFile != "" {
@@ -232,23 +243,34 @@ func main() {
 
 	// Validate Records
 	var discrepancies []Discrepancy
+	var successfulValidations []ValidationRecord // New slice to hold successful validations
 
 	if soaValidationMode != "only" {
 		// Validate all records except SOA
-		discrepancies = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneFilter, viewFilter)
+		discrepancies, successfulValidations = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneFilter, viewFilter, recordSuccessful)
 	}
 
 	if soaValidationMode != "false" {
 		// Validate SOA records separately
-		soaDiscrepancies := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameservers)
+		soaDiscrepancies, soaSuccessfulValidations := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameservers, recordSuccessful)
 		discrepancies = append(discrepancies, soaDiscrepancies...)
+		successfulValidations = append(successfulValidations, soaSuccessfulValidations...)
 	}
 
-	// Generate Report
+	// Generate Discrepancy Report
 	err = generateReport(discrepancies, reportFile, reportFormat, logger)
 	if err != nil {
-		level.Error(logger).Log("msg", "Failed to generate report", "err", err)
+		level.Error(logger).Log("msg", "Failed to generate discrepancy report", "err", err)
 		os.Exit(1)
+	}
+
+	// Generate Successful Validations Report if enabled
+	if recordSuccessful {
+		err = generateSuccessfulReport(successfulValidations, successfulReportFile, reportFormat, logger)
+		if err != nil {
+			level.Error(logger).Log("msg", "Failed to generate successful validations report", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	// Generate NSUpdate Script

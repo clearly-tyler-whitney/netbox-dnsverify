@@ -20,6 +20,15 @@ type Discrepancy struct {
 	Message    string      `json:"Message,omitempty"`
 }
 
+type ValidationRecord struct {
+	FQDN       string      `json:"FQDN"`
+	RecordType string      `json:"RecordType"`
+	Expected   interface{} `json:"Expected"`
+	Actual     interface{} `json:"Actual"`
+	Server     string      `json:"Server"`
+	Message    string      `json:"Message,omitempty"`
+}
+
 type RecordKey struct {
 	FQDN       string
 	RecordType string
@@ -27,11 +36,10 @@ type RecordKey struct {
 	ViewName   string
 }
 
-func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver, zoneFilter, viewFilter string) []Discrepancy {
+func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver, zoneFilter, viewFilter string, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
 	var wg sync.WaitGroup
 	discrepanciesChan := make(chan Discrepancy, len(records)*len(servers))
-
-	validatedPTRs := make(map[string]bool) // Map to keep track of validated PTR record FQDNs
+	successfulChan := make(chan ValidationRecord, len(records)*len(servers))
 
 	// Group records by FQDN and Record Type
 	expectedRecords := make(map[RecordKey][]Record)
@@ -70,12 +78,6 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 			ViewName:   record.ViewName,
 		}
 		expectedRecords[key] = append(expectedRecords[key], record)
-
-		// Collect PTR records to avoid double-handling
-		if strings.ToUpper(record.Type) == "PTR" {
-			ptrName := record.FQDN
-			validatedPTRs[ptrName] = true
-		}
 	}
 
 	for key, records := range expectedRecords {
@@ -98,25 +100,34 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 				return
 			}
 
-			discrepancy := validateRecordsForFQDN(key, records, recordServers, ignoreSerialNumbers, logger)
-			if discrepancy != nil {
-				discrepanciesChan <- *discrepancy
+			discrepancies, successfulValidations := validateRecordsForFQDN(key, records, recordServers, ignoreSerialNumbers, logger, recordSuccessful)
+			for _, d := range discrepancies {
+				discrepanciesChan <- d
+			}
+			for _, v := range successfulValidations {
+				successfulChan <- v
 			}
 		}(key, records)
 	}
 
 	wg.Wait()
 	close(discrepanciesChan)
+	close(successfulChan)
 
 	var allDiscrepancies []Discrepancy
 	for d := range discrepanciesChan {
 		allDiscrepancies = append(allDiscrepancies, d)
 	}
 
-	return allDiscrepancies
+	var successfulValidations []ValidationRecord
+	for v := range successfulChan {
+		successfulValidations = append(successfulValidations, v)
+	}
+
+	return allDiscrepancies, successfulValidations
 }
 
-func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger) *Discrepancy {
+func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
 	expectedValues := []string{}
 
 	// Prepare expected values
@@ -139,37 +150,45 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 	qtype, ok := dns.StringToType[key.RecordType]
 	if !ok {
 		level.Error(logger).Log("msg", "Unknown record type", "type", key.RecordType)
-		return &Discrepancy{
+		discrepancy := Discrepancy{
 			FQDN:       key.FQDN,
 			RecordType: key.RecordType,
 			Expected:   expectedValues,
 			Message:    "Unknown record type",
 		}
+		return []Discrepancy{discrepancy}, nil
 	}
+
+	var discrepancies []Discrepancy
+	var successfulValidations []ValidationRecord
 
 	for _, server := range servers {
 		level.Debug(logger).Log("msg", "Validating records", "fqdn", key.FQDN, "type", key.RecordType, "expected_values", expectedValues, "server", server)
 		resp, err := queryDNSWithRetry(key.FQDN, qtype, server, 3)
 		if err != nil {
 			level.Warn(logger).Log("msg", "DNS query error", "fqdn", key.FQDN, "server", server, "err", err)
-			return &Discrepancy{
+			discrepancy := Discrepancy{
 				FQDN:       key.FQDN,
 				RecordType: key.RecordType,
 				Expected:   expectedValues,
 				Server:     server,
 				Message:    fmt.Sprintf("DNS query error: %v", err),
 			}
+			discrepancies = append(discrepancies, discrepancy)
+			continue
 		}
 
 		if len(resp.Answer) == 0 {
 			level.Warn(logger).Log("msg", "No DNS answer", "fqdn", key.FQDN, "server", server)
-			return &Discrepancy{
+			discrepancy := Discrepancy{
 				FQDN:       key.FQDN,
 				RecordType: key.RecordType,
 				Expected:   expectedValues,
 				Server:     server,
 				Message:    "Record missing",
 			}
+			discrepancies = append(discrepancies, discrepancy)
+			continue
 		}
 
 		actualValues := []string{}
@@ -196,19 +215,31 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 		// Compare expected and actual values (unordered)
 		if !stringSlicesEqualUnordered(expectedValues, actualValues) {
 			level.Warn(logger).Log("msg", "Record values mismatch", "fqdn", key.FQDN, "server", server)
-			return &Discrepancy{
+			discrepancy := Discrepancy{
 				FQDN:       key.FQDN,
 				RecordType: key.RecordType,
 				Expected:   expectedValues,
 				Actual:     actualValues,
 				Server:     server,
 			}
+			discrepancies = append(discrepancies, discrepancy)
+		} else {
+			level.Info(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
+			if recordSuccessful {
+				validationRecord := ValidationRecord{
+					FQDN:       key.FQDN,
+					RecordType: key.RecordType,
+					Expected:   expectedValues,
+					Actual:     actualValues,
+					Server:     server,
+					Message:    "Record validated successfully",
+				}
+				successfulValidations = append(successfulValidations, validationRecord)
+			}
 		}
-
-		level.Info(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
 	}
 
-	return nil
+	return discrepancies, successfulValidations
 }
 
 func stringSlicesEqualUnordered(a, b []string) bool {

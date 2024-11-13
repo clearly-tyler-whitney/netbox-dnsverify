@@ -30,3 +30,4 @@ discrepancies.csv
 .~lock.discrepancies.csv#
 discrepancies.json
 build/
+successful_validations.json

@@ -11,9 +11,10 @@ import (
 	"github.com/miekg/dns"
 )
 
-func validateSOARecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver) []Discrepancy {
+func validateSOARecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
 	var wg sync.WaitGroup
 	discrepanciesChan := make(chan Discrepancy, len(records)*len(servers))
+	successfulChan := make(chan ValidationRecord, len(records)*len(servers))
 
 	// Filter SOA records
 	var soaRecords []Record
@@ -51,68 +52,85 @@ func validateSOARecords(records []Record, servers []string, ignoreSerialNumbers 
 				zoneViewKey := fmt.Sprintf("%s|%s", key.ZoneName, key.ViewName)
 				recordServers = zoneViewToNameservers[zoneViewKey]
 				if len(recordServers) == 0 {
-					// If no specific nameservers found for the zone and view, use all servers
-					recordServers = servers
-					level.Warn(logger).Log("msg", "No nameservers found for zone in view", "zone", key.ZoneName, "view", key.ViewName, "using all servers")
+					// No nameservers found for this zone and view, skip validation
+					level.Warn(logger).Log("msg", "No nameservers found for zone in view, skipping validation", "zone", key.ZoneName, "view", key.ViewName)
+					return
 				}
 			} else {
-				// If no zone or view information, use all servers
-				recordServers = servers
-				level.Warn(logger).Log("msg", "No zone or view information for record", "fqdn", key.FQDN, "using all servers")
+				// No zone or view information, cannot determine authoritative nameservers, skip validation
+				level.Warn(logger).Log("msg", "No zone or view information for SOA record, skipping validation", "fqdn", record.FQDN)
+				return
 			}
 
-			discrepancy := validateSOARecord(record, recordServers, ignoreSerialNumbers, logger)
-			if discrepancy != nil {
-				discrepanciesChan <- *discrepancy
+			discrepancies, successfulValidations := validateSOARecord(record, recordServers, ignoreSerialNumbers, logger, recordSuccessful)
+			for _, d := range discrepancies {
+				discrepanciesChan <- d
+			}
+			for _, v := range successfulValidations {
+				successfulChan <- v
 			}
 		}(record)
 	}
 
 	wg.Wait()
 	close(discrepanciesChan)
+	close(successfulChan)
 
 	var allDiscrepancies []Discrepancy
 	for d := range discrepanciesChan {
 		allDiscrepancies = append(allDiscrepancies, d)
 	}
 
-	return allDiscrepancies
+	var successfulValidations []ValidationRecord
+	for v := range successfulChan {
+		successfulValidations = append(successfulValidations, v)
+	}
+
+	return allDiscrepancies, successfulValidations
 }
 
-func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool, logger log.Logger) *Discrepancy {
+func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
 	expectedSOA := parseSOARecord(record)
 	if expectedSOA == nil {
 		level.Warn(logger).Log("msg", "Invalid SOA record format", "fqdn", record.FQDN)
-		return &Discrepancy{
+		discrepancy := Discrepancy{
 			FQDN:       record.FQDN,
 			RecordType: "SOA",
 			Message:    "Invalid SOA record format",
 		}
+		return []Discrepancy{discrepancy}, nil
 	}
+
+	var discrepancies []Discrepancy
+	var successfulValidations []ValidationRecord
 
 	for _, server := range servers {
 		level.Debug(logger).Log("msg", "Validating SOA record", "fqdn", record.FQDN, "server", server)
 		resp, err := queryDNSWithRetry(record.FQDN, dns.TypeSOA, server, 3)
 		if err != nil {
 			level.Warn(logger).Log("msg", "DNS query error", "fqdn", record.FQDN, "server", server, "err", err)
-			return &Discrepancy{
+			discrepancy := Discrepancy{
 				FQDN:       record.FQDN,
 				RecordType: "SOA",
 				Expected:   expectedSOA,
 				Server:     server,
 				Message:    fmt.Sprintf("DNS query error: %v", err),
 			}
+			discrepancies = append(discrepancies, discrepancy)
+			continue
 		}
 
 		if len(resp.Answer) == 0 {
 			level.Warn(logger).Log("msg", "No DNS answer for SOA record", "fqdn", record.FQDN, "server", server)
-			return &Discrepancy{
+			discrepancy := Discrepancy{
 				FQDN:       record.FQDN,
 				RecordType: "SOA",
 				Expected:   expectedSOA,
 				Server:     server,
 				Message:    "SOA record missing",
 			}
+			discrepancies = append(discrepancies, discrepancy)
+			continue
 		}
 
 		for _, ans := range resp.Answer {
@@ -129,22 +147,34 @@ func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool
 
 				if !soaRecordsEqual(*expectedSOA, actualSOA, ignoreSerialNumbers) {
 					level.Warn(logger).Log("msg", "SOA record mismatch", "fqdn", record.FQDN, "server", server)
-					return &Discrepancy{
+					discrepancy := Discrepancy{
 						FQDN:       record.FQDN,
 						RecordType: "SOA",
 						Expected:   *expectedSOA,
 						Actual:     actualSOA,
 						Server:     server,
 					}
+					discrepancies = append(discrepancies, discrepancy)
+				} else {
+					level.Info(logger).Log("msg", "SOA record validated successfully", "fqdn", record.FQDN, "server", server)
+					if recordSuccessful {
+						validationRecord := ValidationRecord{
+							FQDN:       record.FQDN,
+							RecordType: "SOA",
+							Expected:   *expectedSOA,
+							Actual:     actualSOA,
+							Server:     server,
+							Message:    "SOA record validated successfully",
+						}
+						successfulValidations = append(successfulValidations, validationRecord)
+					}
 				}
-
-				level.Info(logger).Log("msg", "SOA record validated successfully", "fqdn", record.FQDN, "server", server)
-				return nil
+				break // Since we found the SOA record, we can break out of the loop
 			}
 		}
 	}
 
-	return nil
+	return discrepancies, successfulValidations
 }
 
 func parseSOARecord(record Record) *SOARecord {

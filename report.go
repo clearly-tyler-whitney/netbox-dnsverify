@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -30,7 +29,6 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(discrepancies)
 	case "csv":
-		// Adjust CSV generation to handle interface{} types
 		writer := csv.NewWriter(file)
 		defer writer.Flush()
 
@@ -41,9 +39,9 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 		}
 
 		for _, d := range discrepancies {
-			expectedStr := stringifyExpectedActual(d.Expected)
-			actualStr := stringifyExpectedActual(d.Actual)
-			record := []string{d.FQDN, d.RecordType, expectedStr, actualStr, d.Server, d.Message}
+			expected := fmt.Sprintf("%v", d.Expected)
+			actual := fmt.Sprintf("%v", d.Actual)
+			record := []string{d.FQDN, d.RecordType, expected, actual, d.Server, d.Message}
 			err := writer.Write(record)
 			if err != nil {
 				return err
@@ -60,13 +58,49 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 	return nil
 }
 
-func stringifyExpectedActual(value interface{}) string {
-	switch v := value.(type) {
-	case []string:
-		return strings.Join(v, ", ")
-	case SOARecord:
-		return fmt.Sprintf("%+v", v)
-	default:
-		return fmt.Sprintf("%v", v)
+func generateSuccessfulReport(validations []ValidationRecord, reportFile string, reportFormat string, logger log.Logger) error {
+	if len(validations) == 0 {
+		level.Info(logger).Log("msg", "No successful validations to report")
+		return nil
 	}
+
+	file, err := os.Create(reportFile)
+	if err != nil {
+		return fmt.Errorf("failed to create successful validations report file: %v", err)
+	}
+	defer file.Close()
+
+	switch reportFormat {
+	case "json":
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(validations)
+	case "csv":
+		writer := csv.NewWriter(file)
+		defer writer.Flush()
+
+		header := []string{"FQDN", "Type", "Expected", "Actual", "Server", "Message"}
+		err := writer.Write(header)
+		if err != nil {
+			return err
+		}
+
+		for _, v := range validations {
+			expected := fmt.Sprintf("%v", v.Expected)
+			actual := fmt.Sprintf("%v", v.Actual)
+			record := []string{v.FQDN, v.RecordType, expected, actual, v.Server, v.Message}
+			err := writer.Write(record)
+			if err != nil {
+				return err
+			}
+		}
+	default:
+		// Default to table format
+		for _, v := range validations {
+			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nServer: %s\nMessage: %s\n\n",
+				v.FQDN, v.RecordType, v.Expected, v.Actual, v.Server, v.Message)
+		}
+	}
+
+	return nil
 }
