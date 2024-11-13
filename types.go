@@ -14,6 +14,7 @@ type Record struct {
 	Value       string     `json:"value"`
 	Zone        *Zone      `json:"zone"`
 	ZoneName    string     // Extracted from Zone.Name
+	ViewName    string     // Extracted from Zone.View.Name
 	PTRRecord   *PTRRecord `json:"ptr_record"`
 	DisablePTR  bool       `json:"disable_ptr"`
 	Managed     bool       `json:"managed"`
@@ -50,8 +51,6 @@ type PTRRecord struct {
 	Value string `json:"value"`
 	// Add other fields as needed
 }
-
-// New structs for Nameservers and Zones API
 
 type NameserversResponse struct {
 	Count    int          `json:"count"`

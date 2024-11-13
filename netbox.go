@@ -13,7 +13,96 @@ import (
 	"github.com/go-kit/log/level"
 )
 
-// Existing structs in types.go
+// Fetch DNS Records from NetBox with filters
+func getAllDNSRecords(baseURL, token string, logger log.Logger, zoneFilter, viewFilter string) ([]Record, error) {
+	var allRecords []Record
+	offset := 0
+	limit := 50
+
+	// Parse the base URL
+	parsedBaseURL, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %v", err)
+	}
+
+	for {
+		// Clone the parsed URL to avoid modifying the original
+		parsedURL := *parsedBaseURL
+
+		// Set query parameters
+		query := parsedURL.Query()
+		query.Set("limit", fmt.Sprintf("%d", limit))
+		query.Set("offset", fmt.Sprintf("%d", offset))
+		// Apply filters
+		if zoneFilter != "" {
+			query.Set("zone__name", zoneFilter)
+		}
+		if viewFilter != "" {
+			query.Set("zone__view__name", viewFilter)
+		}
+		parsedURL.RawQuery = query.Encode()
+
+		apiURL := parsedURL.String()
+
+		// Add debug log for the outgoing request URL
+		level.Debug(logger).Log("msg", "Requesting NetBox API", "url", apiURL)
+
+		records, err := getDNSRecords(apiURL, token, logger)
+		if err != nil {
+			return nil, err
+		}
+		allRecords = append(allRecords, records...)
+		if len(records) < limit {
+			break
+		}
+		offset += limit
+	}
+	return allRecords, nil
+}
+
+// Fetch Nameservers and their Zones from NetBox with filter
+func getAllNameservers(baseURL, token string, logger log.Logger, nameserverFilter string) ([]Nameserver, error) {
+	var allNameservers []Nameserver
+	offset := 0
+	limit := 50
+
+	// Parse the base URL
+	parsedBaseURL, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %v", err)
+	}
+
+	for {
+		// Clone the parsed URL to avoid modifying the original
+		parsedURL := *parsedBaseURL
+
+		// Set query parameters
+		query := parsedURL.Query()
+		query.Set("limit", fmt.Sprintf("%d", limit))
+		query.Set("offset", fmt.Sprintf("%d", offset))
+		// Apply nameserver filter
+		if nameserverFilter != "" {
+			query.Set("name", nameserverFilter)
+		}
+		parsedURL.RawQuery = query.Encode()
+
+		apiURL := parsedURL.String()
+
+		// Add debug log for the outgoing request URL
+		level.Debug(logger).Log("msg", "Requesting NetBox Nameservers API", "url", apiURL)
+
+		nameservers, err := getNameservers(apiURL, token, logger)
+		if err != nil {
+			return nil, err
+		}
+		allNameservers = append(allNameservers, nameservers...)
+		if len(nameservers) < limit {
+			break
+		}
+		offset += limit
+	}
+	return allNameservers, nil
+}
 
 // Fetch DNS Records from NetBox
 func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
@@ -56,13 +145,13 @@ func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
 		return nil, err
 	}
 
-	// Populate ZoneName for each record
+	// Populate ZoneName and ViewName for each record
 	for i := range apiResponse.Results {
 		record := &apiResponse.Results[i]
 		if record.Zone != nil {
 			record.ZoneName = record.Zone.Name
-			if record.ZoneName == "" {
-				level.Warn(logger).Log("msg", "Zone name is empty", "record_id", record.ID)
+			if record.Zone.View != nil {
+				record.ViewName = record.Zone.View.Name
 			}
 		} else {
 			record.ZoneName = ""
@@ -73,7 +162,7 @@ func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
 	return apiResponse.Results, nil
 }
 
-// Fetch Nameservers and their Zones from NetBox
+// Fetch Nameservers from NetBox
 func getNameservers(apiURL, token string, logger log.Logger) ([]Nameserver, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -115,84 +204,4 @@ func getNameservers(apiURL, token string, logger log.Logger) ([]Nameserver, erro
 	}
 
 	return nsResponse.Results, nil
-}
-
-// Fetch all DNS Records with pagination
-func getAllDNSRecords(baseURL, token string, logger log.Logger) ([]Record, error) {
-	var allRecords []Record
-	offset := 0
-	limit := 50
-
-	// Parse the base URL
-	parsedBaseURL, err := url.Parse(strings.TrimRight(baseURL, "/"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL: %v", err)
-	}
-
-	for {
-		// Clone the parsed URL to avoid modifying the original
-		parsedURL := *parsedBaseURL
-
-		// Set query parameters
-		query := parsedURL.Query()
-		query.Set("limit", fmt.Sprintf("%d", limit))
-		query.Set("offset", fmt.Sprintf("%d", offset))
-		parsedURL.RawQuery = query.Encode()
-
-		apiURL := parsedURL.String()
-
-		// Add debug log for the outgoing request URL
-		level.Debug(logger).Log("msg", "Requesting NetBox API", "url", apiURL)
-
-		records, err := getDNSRecords(apiURL, token, logger)
-		if err != nil {
-			return nil, err
-		}
-		allRecords = append(allRecords, records...)
-		if len(records) < limit {
-			break
-		}
-		offset += limit
-	}
-	return allRecords, nil
-}
-
-// Fetch all Nameservers with pagination (if needed)
-func getAllNameservers(baseURL, token string, logger log.Logger) ([]Nameserver, error) {
-	var allNameservers []Nameserver
-	offset := 0
-	limit := 50
-
-	// Parse the base URL
-	parsedBaseURL, err := url.Parse(strings.TrimRight(baseURL, "/"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL: %v", err)
-	}
-
-	for {
-		// Clone the parsed URL to avoid modifying the original
-		parsedURL := *parsedBaseURL
-
-		// Set query parameters
-		query := parsedURL.Query()
-		query.Set("limit", fmt.Sprintf("%d", limit))
-		query.Set("offset", fmt.Sprintf("%d", offset))
-		parsedURL.RawQuery = query.Encode()
-
-		apiURL := parsedURL.String()
-
-		// Add debug log for the outgoing request URL
-		level.Debug(logger).Log("msg", "Requesting NetBox Nameservers API", "url", apiURL)
-
-		nameservers, err := getNameservers(apiURL, token, logger)
-		if err != nil {
-			return nil, err
-		}
-		allNameservers = append(allNameservers, nameservers...)
-		if len(nameservers) < limit {
-			break
-		}
-		offset += limit
-	}
-	return allNameservers, nil
 }

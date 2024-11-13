@@ -26,12 +26,13 @@ func main() {
 		nsupdateFile        string
 		ignoreSerialNumbers bool
 		logLevel            string
-		nameserversAPIPath  string
-		recordsAPIPath      string
+		zoneFilter          string
+		viewFilter          string
+		nameserverFilter    string
 	)
 
 	// Define command-line flags
-	pflag.StringVar(&configFile, "config", "", "Path to the configuration file")
+	pflag.StringVar(&configFile, "config", "", "Path to the configuration file (default \"./config.yaml\")")
 	pflag.StringVar(&apiURL, "api-url", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
 	pflag.StringVar(&apiToken, "api-token", "", "NetBox API token")
 	pflag.StringVar(&apiTokenFile, "api-token-file", "", "Path to the NetBox API token file")
@@ -41,8 +42,9 @@ func main() {
 	pflag.StringVar(&nsupdateFile, "nsupdate-file", "nsupdate.txt", "File to write nsupdate commands")
 	pflag.BoolVar(&ignoreSerialNumbers, "ignore-serial-numbers", false, "Ignore serial numbers when comparing SOA records")
 	pflag.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	pflag.StringVar(&nameserversAPIPath, "nameservers-api-path", "/api/plugins/netbox-dns/nameservers/", "NetBox Nameservers API path")
-	pflag.StringVar(&recordsAPIPath, "records-api-path", "/api/plugins/netbox-dns/records/", "NetBox DNS Records API path")
+	pflag.StringVar(&zoneFilter, "zone", "", "Filter validations by zone name")
+	pflag.StringVar(&viewFilter, "view", "", "Filter validations by view name")
+	pflag.StringVar(&nameserverFilter, "nameserver", "", "Filter validations by nameserver")
 	pflag.Parse()
 
 	// Initialize Viper
@@ -79,6 +81,9 @@ func main() {
 	viper.BindEnv("log_level")
 	viper.BindEnv("nameservers_api_path")
 	viper.BindEnv("records_api_path")
+	viper.BindEnv("zone")
+	viper.BindEnv("view")
+	viper.BindEnv("nameserver")
 
 	// Set default values from flags
 	viper.SetDefault("api_url", apiURL)
@@ -90,11 +95,11 @@ func main() {
 	viper.SetDefault("nsupdate_file", nsupdateFile)
 	viper.SetDefault("ignore_serial_numbers", ignoreSerialNumbers)
 	viper.SetDefault("log_level", logLevel)
-	viper.SetDefault("nameservers_api_path", nameserversAPIPath)
-	viper.SetDefault("records_api_path", recordsAPIPath)
+	viper.SetDefault("zone", zoneFilter)
+	viper.SetDefault("view", viewFilter)
+	viper.SetDefault("nameserver", nameserverFilter)
 
 	// Override flags with environment variables if they are set
-	// Environment variables have higher priority
 	apiURL = viper.GetString("api_url")
 	apiToken = viper.GetString("api_token")
 	apiTokenFile = viper.GetString("api_token_file")
@@ -104,8 +109,9 @@ func main() {
 	nsupdateFile = viper.GetString("nsupdate_file")
 	ignoreSerialNumbers = viper.GetBool("ignore_serial_numbers")
 	logLevel = viper.GetString("log_level")
-	nameserversAPIPath = viper.GetString("nameservers_api_path")
-	recordsAPIPath = viper.GetString("records_api_path")
+	zoneFilter = viper.GetString("zone")
+	viewFilter = viper.GetString("view")
+	nameserverFilter = viper.GetString("nameserver")
 
 	// Load NetBox API token from file if specified
 	if apiTokenFile != "" {
@@ -150,9 +156,9 @@ func main() {
 	} else {
 		// Fetch nameservers from NetBox API
 		level.Info(logger).Log("msg", "No DNS servers configured, fetching from NetBox Nameservers API")
-		nameserversEndpoint := resolveURL(parsedBaseURL, nameserversAPIPath)
+		nameserversEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/nameservers/")
 
-		fetchedNameservers, err := getAllNameservers(nameserversEndpoint, apiToken, logger)
+		fetchedNameservers, err := getAllNameservers(nameserversEndpoint, apiToken, logger, nameserverFilter)
 		if err != nil {
 			level.Error(logger).Log("msg", "Failed to fetch nameservers from NetBox", "err", err)
 			os.Exit(1)
@@ -179,10 +185,10 @@ func main() {
 	}
 
 	// Construct the Records API endpoint
-	recordsEndpoint := resolveURL(parsedBaseURL, recordsAPIPath)
+	recordsEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/records/")
 
 	// Fetch DNS Records
-	records, err := getAllDNSRecords(recordsEndpoint, apiToken, logger)
+	records, err := getAllDNSRecords(recordsEndpoint, apiToken, logger, zoneFilter, viewFilter)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to get DNS records from NetBox", "err", err)
 		os.Exit(1)
@@ -191,7 +197,7 @@ func main() {
 	level.Info(logger).Log("msg", "Fetched DNS records from NetBox", "count", len(records))
 
 	// Validate Records
-	discrepancies := validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers)
+	discrepancies := validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneFilter, viewFilter)
 
 	// Generate Report
 	err = generateReport(discrepancies, reportFile, reportFormat, logger)

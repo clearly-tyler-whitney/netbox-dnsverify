@@ -20,6 +20,102 @@ type Discrepancy struct {
 	Message    string
 }
 
+func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver, zoneFilter, viewFilter string) []Discrepancy {
+	var wg sync.WaitGroup
+	discrepanciesChan := make(chan []Discrepancy, len(records)*len(servers)*2) // Adjusted buffer size
+
+	validatedPTRs := make(map[string]bool) // Map to keep track of validated PTR record FQDNs
+
+	// First, collect all PTR records to avoid double-handling
+	for _, record := range records {
+		if strings.ToUpper(record.Type) == "PTR" {
+			ptrName := record.FQDN
+			validatedPTRs[ptrName] = true
+		}
+	}
+
+	// Create mapping of (zone, view) to nameservers
+	zoneViewToNameservers := make(map[string][]string)
+	for _, ns := range nameservers {
+		for _, zone := range ns.Zones {
+			if zone.View != nil {
+				key := fmt.Sprintf("%s|%s", zone.Name, zone.View.Name)
+				zoneViewToNameservers[key] = append(zoneViewToNameservers[key], ns.Name)
+			} else {
+				level.Warn(logger).Log("msg", "Zone has no associated view", "zone", zone.Name)
+			}
+		}
+	}
+
+	for _, record := range records {
+		// Apply filters
+		if zoneFilter != "" && record.ZoneName != zoneFilter {
+			continue // Skip this record
+		}
+		if viewFilter != "" && record.ViewName != viewFilter {
+			continue // Skip this record
+		}
+
+		wg.Add(1)
+		go func(rec Record) {
+			defer wg.Done()
+			// Determine which nameservers are authoritative for this record's zone and view
+			var recordServers []string
+			if rec.ZoneName != "" && rec.ViewName != "" {
+				key := fmt.Sprintf("%s|%s", rec.ZoneName, rec.ViewName)
+				recordServers = zoneViewToNameservers[key]
+				if len(recordServers) == 0 {
+					// If no specific nameservers found for the zone and view, use all servers
+					recordServers = servers
+					level.Warn(logger).Log("msg", "No nameservers found for zone in view", "zone", rec.ZoneName, "view", rec.ViewName, "using all servers")
+				}
+			} else {
+				// If no zone or view information, use all servers
+				recordServers = servers
+				level.Warn(logger).Log("msg", "No zone or view information for record", "fqdn", rec.FQDN, "using all servers")
+			}
+
+			discrepancies := validateRecord(rec, recordServers, ignoreSerialNumbers, logger)
+			if len(discrepancies) > 0 {
+				discrepanciesChan <- discrepancies
+			}
+			// Validate PTR if applicable
+			if strings.ToUpper(rec.Type) == "A" && !rec.DisablePTR {
+				var expectedFQDN string
+				if rec.PTRRecord != nil && rec.PTRRecord.Value != "" {
+					expectedFQDN = rec.PTRRecord.Value
+				} else {
+					expectedFQDN = rec.FQDN
+				}
+				ptrName, err := dns.ReverseAddr(rec.Value)
+				if err != nil {
+					level.Error(logger).Log("msg", "Invalid IP address", "ip", rec.Value, "err", err)
+				} else {
+					if !validatedPTRs[ptrName] {
+						validatedPTRs[ptrName] = true
+						ptrDiscrepancies := validatePTRRecord(rec.Value, expectedFQDN, recordServers, logger)
+						if len(ptrDiscrepancies) > 0 {
+							discrepanciesChan <- ptrDiscrepancies
+						}
+					} else {
+						level.Debug(logger).Log("msg", "Skipping PTR validation; already validated", "ptr_name", ptrName)
+					}
+				}
+			}
+		}(record)
+	}
+
+	wg.Wait()
+	close(discrepanciesChan)
+
+	var allDiscrepancies []Discrepancy
+	for d := range discrepanciesChan {
+		allDiscrepancies = append(allDiscrepancies, d...)
+	}
+
+	return allDiscrepancies
+}
+
 func validateRecord(record Record, servers []string, ignoreSerialNumbers bool, logger log.Logger) []Discrepancy {
 	var discrepancies []Discrepancy
 	expectedValue := record.Value
@@ -225,88 +321,4 @@ func validatePTRRecord(ip string, expectedFQDN string, servers []string, logger 
 		}
 	}
 	return discrepancies
-}
-
-// Modified validateAllRecords to accept nameservers
-func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver) []Discrepancy {
-	var wg sync.WaitGroup
-	discrepanciesChan := make(chan []Discrepancy, len(records)*len(servers)*2) // Adjusted buffer size
-
-	validatedPTRs := make(map[string]bool) // Map to keep track of validated PTR record FQDNs
-
-	// First, collect all PTR records to avoid double-handling
-	for _, record := range records {
-		if strings.ToUpper(record.Type) == "PTR" {
-			ptrName := record.FQDN
-			validatedPTRs[ptrName] = true
-		}
-	}
-
-	// Create a map of zone to nameservers for quick lookup
-	zoneToNameservers := make(map[string][]string)
-	for _, ns := range nameservers {
-		for _, zone := range ns.Zones {
-			zoneName := zone.Name
-			zoneToNameservers[zoneName] = append(zoneToNameservers[zoneName], ns.Name)
-		}
-	}
-
-	for _, record := range records {
-		wg.Add(1)
-		go func(rec Record) {
-			defer wg.Done()
-			// Determine which nameservers are authoritative for this record's zone
-			var recordServers []string
-			if rec.ZoneName != "" {
-				recordServers = zoneToNameservers[rec.ZoneName]
-				if len(recordServers) == 0 {
-					// If no specific nameservers found for the zone, use all servers
-					recordServers = servers
-					level.Warn(logger).Log("msg", "No nameservers found for zone", "zone", rec.ZoneName, "using all servers")
-				}
-			} else {
-				// If no zone information, use all servers
-				recordServers = servers
-				level.Warn(logger).Log("msg", "No zone information for record", "fqdn", rec.FQDN, "using all servers")
-			}
-
-			discrepancies := validateRecord(rec, recordServers, ignoreSerialNumbers, logger)
-			if len(discrepancies) > 0 {
-				discrepanciesChan <- discrepancies
-			}
-			// Validate PTR if applicable
-			if strings.ToUpper(rec.Type) == "A" && !rec.DisablePTR {
-				var expectedFQDN string
-				if rec.PTRRecord != nil && rec.PTRRecord.Value != "" {
-					expectedFQDN = rec.PTRRecord.Value
-				} else {
-					expectedFQDN = rec.FQDN
-				}
-				ptrName, err := dns.ReverseAddr(rec.Value)
-				if err != nil {
-					level.Error(logger).Log("msg", "Invalid IP address", "ip", rec.Value, "err", err)
-				} else {
-					if !validatedPTRs[ptrName] {
-						validatedPTRs[ptrName] = true
-						ptrDiscrepancies := validatePTRRecord(rec.Value, expectedFQDN, recordServers, logger)
-						if len(ptrDiscrepancies) > 0 {
-							discrepanciesChan <- ptrDiscrepancies
-						}
-					} else {
-						level.Debug(logger).Log("msg", "Skipping PTR validation; already validated", "ptr_name", ptrName)
-					}
-				}
-			}
-		}(record)
-	}
-
-	wg.Wait()
-	close(discrepanciesChan)
-
-	var allDiscrepancies []Discrepancy
-	for d := range discrepanciesChan {
-		allDiscrepancies = append(allDiscrepancies, d...)
-	}
-
-	return allDiscrepancies
 }
