@@ -183,9 +183,9 @@ func main() {
 	var logger log.Logger
 	switch strings.ToLower(logFormat) {
 	case "json":
-		logger = log.NewJSONLogger(log.NewSyncWriter(os.Stdout))
+		logger = log.NewJSONLogger(log.NewSyncWriter(os.Stderr))
 	default:
-		logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout))
+		logger = log.NewLogfmtLogger(log.NewSyncWriter(os.Stderr))
 	}
 	logger = level.NewFilter(logger, parseLogLevel(logLevel))
 	logger = log.With(logger, "ts", log.DefaultTimestampUTC, "caller", log.DefaultCaller)
@@ -227,7 +227,7 @@ func main() {
 			servers = append(servers, server)
 		}
 
-		level.Info(logger).Log("msg", "Authoritative DNS servers extracted", "servers", servers)
+		level.Info(logger).Log("msg", "Authoritative DNS servers extracted", "servers", strings.Join(servers, ", "))
 	}
 
 	// Determine zones to validate based on nameservers if nameserverFilter is used
@@ -242,7 +242,7 @@ func main() {
 		for zone := range zonesSet {
 			zonesToValidate = append(zonesToValidate, zone)
 		}
-		level.Info(logger).Log("msg", "Zones to validate derived from nameservers", "zones", zonesToValidate)
+		level.Info(logger).Log("msg", "Zones to validate derived from nameservers", "zones", strings.Join(zonesToValidate, ", "))
 	}
 
 	// Construct the Records API endpoint

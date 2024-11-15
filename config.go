@@ -3,7 +3,6 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 
 	"github.com/go-kit/log"
@@ -31,7 +30,7 @@ func LoadConfig(logger log.Logger) *Config {
 	configFile := os.Getenv("CONFIG_FILE")
 	if configFile != "" {
 		fileConfig := &Config{}
-		data, err := ioutil.ReadFile(configFile)
+		data, err := os.ReadFile(configFile)
 		if err != nil {
 			level.Error(logger).Log("msg", "Failed to read config file", "err", err)
 			os.Exit(1)

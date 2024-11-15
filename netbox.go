@@ -4,7 +4,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -128,7 +128,7 @@ func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
 	defer resp.Body.Close()
 
 	// Read the response body
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +186,7 @@ func getNameservers(apiURL, token string, logger log.Logger) ([]Nameserver, erro
 	defer resp.Body.Close()
 
 	// Read the response body
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
