@@ -32,7 +32,7 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 		writer := csv.NewWriter(file)
 		defer writer.Flush()
 
-		header := []string{"FQDN", "Type", "Expected", "Actual", "Expected TTL", "Actual TTL", "Server", "Message"}
+		header := []string{"FQDN", "Zone Name", "Type", "Expected", "Actual", "Expected TTL", "Actual TTL", "Server", "Message"}
 		err := writer.Write(header)
 		if err != nil {
 			return err
@@ -43,6 +43,7 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 			actual := fmt.Sprintf("%v", d.Actual)
 			record := []string{
 				d.FQDN,
+				d.ZoneName,
 				d.RecordType,
 				expected,
 				actual,
@@ -59,8 +60,8 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 	default:
 		// Default to table format
 		for _, d := range discrepancies {
-			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nExpected TTL: %d\nActual TTL: %d\nServer: %s\nMessage: %s\n\n",
-				d.FQDN, d.RecordType, d.Expected, d.Actual, d.ExpectedTTL, d.ActualTTL, d.Server, d.Message)
+			fmt.Fprintf(file, "FQDN: %s\nZone Name: %s\nType: %s\nExpected: %v\nActual: %v\nExpected TTL: %d\nActual TTL: %d\nServer: %s\nMessage: %s\n\n",
+				d.FQDN, d.ZoneName, d.RecordType, d.Expected, d.Actual, d.ExpectedTTL, d.ActualTTL, d.Server, d.Message)
 		}
 	}
 
@@ -88,7 +89,7 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 		writer := csv.NewWriter(file)
 		defer writer.Flush()
 
-		header := []string{"FQDN", "Type", "Expected", "Actual", "Expected TTL", "Actual TTL", "Server", "Message"}
+		header := []string{"FQDN", "Zone Name", "Type", "Expected", "Actual", "Expected TTL", "Actual TTL", "Server", "Message"}
 		err := writer.Write(header)
 		if err != nil {
 			return err
@@ -99,6 +100,7 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 			actual := fmt.Sprintf("%v", v.Actual)
 			record := []string{
 				v.FQDN,
+				v.ZoneName,
 				v.RecordType,
 				expected,
 				actual,
@@ -115,8 +117,8 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 	default:
 		// Default to table format
 		for _, v := range validations {
-			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nExpected TTL: %d\nActual TTL: %d\nServer: %s\nMessage: %s\n\n",
-				v.FQDN, v.RecordType, v.Expected, v.Actual, v.ExpectedTTL, v.ActualTTL, v.Server, v.Message)
+			fmt.Fprintf(file, "FQDN: %s\nZone Name: %s\nType: %s\nExpected: %v\nActual: %v\nExpected TTL: %d\nActual TTL: %d\nServer: %s\nMessage: %s\n\n",
+				v.FQDN, v.ZoneName, v.RecordType, v.Expected, v.Actual, v.ExpectedTTL, v.ActualTTL, v.Server, v.Message)
 		}
 	}
 

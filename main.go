@@ -22,7 +22,6 @@ func main() {
 		apiTokenFile         string
 		reportFile           string
 		reportFormat         string
-		nsupdateFile         string // Deprecated
 		nsupdatePath         string
 		ignoreSerialNumbers  bool
 		validateSOA          string
@@ -42,8 +41,7 @@ func main() {
 	pflag.StringVarP(&apiTokenFile, "api-token-file", "T", "", "Path to the NetBox API token file")
 	pflag.StringVarP(&reportFile, "report-file", "r", "bad.report", "File to write the discrepancy report")
 	pflag.StringVarP(&reportFormat, "report-format", "f", "table", "Format of the report (table, csv, json)")
-	pflag.StringVarP(&nsupdateFile, "nsupdate-file", "n", "nsupdate.txt", "File to write nsupdate commands (deprecated)")
-	pflag.StringVarP(&nsupdatePath, "nsupdate-path", "p", "out", "Directory to write nsupdate commands per server")
+	pflag.StringVarP(&nsupdatePath, "nsupdate-path", "p", "out", "Directory to write nsupdate commands")
 	pflag.BoolVarP(&ignoreSerialNumbers, "ignore-serial-numbers", "i", true, "Ignore serial numbers when comparing SOA records")
 	pflag.StringVarP(&validateSOA, "validate-soa", "s", "false", "SOA record validation ('false', 'true', or 'only')")
 	pflag.StringVarP(&logLevel, "log-level", "l", "info", "Log level (debug, info, warn, error)")
@@ -93,7 +91,6 @@ func main() {
 	viper.BindEnv("dns_servers")
 	viper.BindEnv("report_file")
 	viper.BindEnv("report_format")
-	viper.BindEnv("nsupdate_file")
 	viper.BindEnv("nsupdate_path")
 	viper.BindEnv("ignore_serial_numbers")
 	viper.BindEnv("validate_soa")
@@ -112,7 +109,6 @@ func main() {
 	viper.SetDefault("api_token_file", apiTokenFile)
 	viper.SetDefault("report_file", reportFile)
 	viper.SetDefault("report_format", reportFormat)
-	viper.SetDefault("nsupdate_file", nsupdateFile)
 	viper.SetDefault("nsupdate_path", nsupdatePath)
 	viper.SetDefault("ignore_serial_numbers", ignoreSerialNumbers)
 	viper.SetDefault("validate_soa", validateSOA)
@@ -137,7 +133,6 @@ func main() {
 	apiTokenFile = viper.GetString("api_token_file")
 	reportFile = viper.GetString("report_file")
 	reportFormat = viper.GetString("report_format")
-	nsupdateFile = viper.GetString("nsupdate_file") // Deprecated
 	nsupdatePath = viper.GetString("nsupdate_path")
 	ignoreSerialNumbers = viper.GetBool("ignore_serial_numbers")
 	validateSOA = viper.GetString("validate_soa")
@@ -190,11 +185,11 @@ func main() {
 	level.Info(logger).Log("msg", "Starting DNS validation")
 
 	var servers []string
-	var nameservers []Nameserver
+	var nameserversList []Nameserver
 
 	{
 		// Fetch nameservers from NetBox API
-		level.Info(logger).Log("msg", "No DNS servers configured, fetching from NetBox Nameservers API")
+		level.Info(logger).Log("msg", "Fetching nameservers from NetBox Nameservers API")
 		nameserversEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/nameservers/")
 
 		fetchedNameservers, err := getAllNameservers(nameserversEndpoint, apiToken, logger, nameserverFilter)
@@ -208,12 +203,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		nameservers = fetchedNameservers
-		level.Info(logger).Log("msg", "Fetched nameservers from NetBox", "count", len(nameservers))
+		nameserversList = fetchedNameservers
+		level.Info(logger).Log("msg", "Fetched nameservers from NetBox", "count", len(nameserversList))
 
 		// Extract unique DNS servers
 		serverSet := make(map[string]bool)
-		for _, ns := range nameservers {
+		for _, ns := range nameserversList {
 			serverSet[ns.Name] = true
 		}
 		for server := range serverSet {
@@ -227,7 +222,7 @@ func main() {
 	var zonesToValidate []string
 	if nameserverFilter != "" {
 		zonesSet := make(map[string]bool)
-		for _, ns := range nameservers {
+		for _, ns := range nameserversList {
 			for _, zone := range ns.Zones {
 				zonesSet[zone.Name] = true
 			}
@@ -259,12 +254,20 @@ func main() {
 	}
 	level.Info(logger).Log("msg", "Fetched DNS zones from NetBox", "count", len(zonesMap))
 
-	// Assign ZoneDefaultTTL to each record
+	// Build a map from zone name to Zone
+	zonesByName := make(map[string]Zone)
+	for _, zone := range zonesMap {
+		zonesByName[zone.Name] = zone
+	}
+
+	// Assign ZoneDefaultTTL and SoaTTL to each record
 	for i := range records {
 		record := &records[i]
 		if record.Zone != nil {
 			if zone, ok := zonesMap[record.Zone.ID]; ok {
 				record.ZoneDefaultTTL = zone.DefaultTTL
+				// Update the Zone struct in the record to include SoaTTL
+				record.Zone.SoaTTL = zone.SoaTTL
 			} else {
 				level.Warn(logger).Log("msg", "Zone not found in zones map", "zone_id", record.Zone.ID)
 			}
@@ -276,16 +279,16 @@ func main() {
 
 	// Validate Records
 	var discrepancies []Discrepancy
-	var successfulValidations []ValidationRecord // New slice to hold successful validations
+	var successfulValidations []ValidationRecord
 
 	if soaValidationMode != "only" {
 		// Validate all records except SOA
-		discrepancies, successfulValidations = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameservers, zoneFilter, viewFilter, recordSuccessful)
+		discrepancies, successfulValidations = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameserversList, zoneFilter, viewFilter, recordSuccessful, zonesByName)
 	}
 
 	if soaValidationMode != "false" {
 		// Validate SOA records separately
-		soaDiscrepancies, soaSuccessfulValidations := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameservers, recordSuccessful)
+		soaDiscrepancies, soaSuccessfulValidations := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameserversList, recordSuccessful)
 		discrepancies = append(discrepancies, soaDiscrepancies...)
 		successfulValidations = append(successfulValidations, soaSuccessfulValidations...)
 	}
@@ -306,8 +309,8 @@ func main() {
 		}
 	}
 
-	// Generate NSUpdate Scripts per server
-	err = generateNSUpdateScripts(discrepancies, nsupdatePath, logger)
+	// Generate NSUpdate Scripts per server and zone
+	err = generateNSUpdateScripts(discrepancies, nsupdatePath, zonesByName, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to generate nsupdate scripts", "err", err)
 		os.Exit(1)

@@ -11,44 +11,25 @@ import (
 	"github.com/miekg/dns"
 )
 
-type Discrepancy struct {
-	FQDN        string      `json:"FQDN"`
-	RecordType  string      `json:"RecordType"`
-	Expected    interface{} `json:"Expected"`
-	Actual      interface{} `json:"Actual"`
-	ExpectedTTL int         `json:"ExpectedTTL"`
-	ActualTTL   int         `json:"ActualTTL"`
-	Server      string      `json:"Server"`
-	Message     string      `json:"Message,omitempty"`
-}
-
-type ValidationRecord struct {
-	FQDN        string      `json:"FQDN"`
-	RecordType  string      `json:"RecordType"`
-	Expected    interface{} `json:"Expected"`
-	Actual      interface{} `json:"Actual"`
-	ExpectedTTL int         `json:"ExpectedTTL"`
-	ActualTTL   int         `json:"ActualTTL"`
-	Server      string      `json:"Server"`
-	Message     string      `json:"Message,omitempty"`
-}
-
-type RecordKey struct {
-	FQDN       string
-	RecordType string
-	ZoneName   string
-	ViewName   string
-}
-
-func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, nameservers []Nameserver, zoneFilter, viewFilter string, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
+// validateAllRecords validates all DNS records except SOA records.
+func validateAllRecords(
+	records []Record,
+	servers []string,
+	ignoreSerialNumbers bool,
+	logger log.Logger,
+	nameservers []Nameserver,
+	zoneFilter, viewFilter string,
+	recordSuccessful bool,
+	zonesByName map[string]Zone,
+) ([]Discrepancy, []ValidationRecord) {
 	var wg sync.WaitGroup
 	discrepanciesChan := make(chan Discrepancy, len(records)*len(servers))
 	successfulChan := make(chan ValidationRecord, len(records)*len(servers))
 
-	// Group records by FQDN and Record Type
+	// Group records by FQDN and Record Type using RecordKey
 	expectedRecords := make(map[RecordKey][]Record)
 
-	// Create mapping of (zone, view) to nameservers
+	// Create a mapping of (zone, view) to nameservers
 	zoneViewToNameservers := make(map[string][]string)
 	for _, ns := range nameservers {
 		for _, zone := range ns.Zones {
@@ -61,18 +42,19 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 		}
 	}
 
+	// Populate expectedRecords map based on filters
 	for _, record := range records {
-		// Skip SOA records (handled separately)
+		// Skip SOA records as they are handled separately
 		if strings.ToUpper(record.Type) == "SOA" {
 			continue
 		}
 
-		// Apply filters
+		// Apply zone and view filters if specified
 		if zoneFilter != "" && record.ZoneName != zoneFilter {
-			continue // Skip this record
+			continue
 		}
 		if viewFilter != "" && record.ViewName != viewFilter {
-			continue // Skip this record
+			continue
 		}
 
 		key := RecordKey{
@@ -84,11 +66,13 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 		expectedRecords[key] = append(expectedRecords[key], record)
 	}
 
+	// Iterate over each group and validate
 	for key, records := range expectedRecords {
 		wg.Add(1)
 		go func(key RecordKey, records []Record) {
 			defer wg.Done()
-			// Determine which nameservers are authoritative for this record's zone and view
+
+			// Determine authoritative nameservers for this record's zone and view
 			var recordServers []string
 			if key.ZoneName != "" && key.ViewName != "" {
 				zoneViewKey := fmt.Sprintf("%s|%s", key.ZoneName, key.ViewName)
@@ -96,7 +80,7 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 				if len(recordServers) == 0 {
 					// No nameservers found for this zone and view, skip validation
 					level.Warn(logger).Log("msg", "No nameservers found for zone in view, skipping validation", "zone", key.ZoneName, "view", key.ViewName)
-					return // Exits the goroutine
+					return
 				}
 			} else {
 				// No zone or view information, cannot determine authoritative nameservers, skip validation
@@ -104,7 +88,18 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 				return
 			}
 
-			discrepancies, successfulValidations := validateRecordsForFQDN(key, records, recordServers, ignoreSerialNumbers, logger, recordSuccessful)
+			// Validate records for this FQDN and RecordType
+			discrepancies, successfulValidations := validateRecordsForFQDN(
+				key,
+				records,
+				recordServers,
+				ignoreSerialNumbers,
+				logger,
+				recordSuccessful,
+				zonesByName,
+			)
+
+			// Send discrepancies and successful validations to channels
 			for _, d := range discrepancies {
 				discrepanciesChan <- d
 			}
@@ -114,10 +109,12 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 		}(key, records)
 	}
 
+	// Wait for all goroutines to finish
 	wg.Wait()
 	close(discrepanciesChan)
 	close(successfulChan)
 
+	// Collect all discrepancies and successful validations
 	var allDiscrepancies []Discrepancy
 	for d := range discrepanciesChan {
 		allDiscrepancies = append(allDiscrepancies, d)
@@ -131,15 +128,25 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 	return allDiscrepancies, successfulValidations
 }
 
-func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
+// validateRecordsForFQDN validates DNS records for a specific FQDN and RecordType against the authoritative nameservers.
+// It compares expected and actual DNS records, handles TTL inheritance, and returns any discrepancies found.
+func validateRecordsForFQDN(
+	key RecordKey,
+	records []Record,
+	servers []string,
+	ignoreSerialNumbers bool,
+	logger log.Logger,
+	recordSuccessful bool,
+	zonesByName map[string]Zone,
+) ([]Discrepancy, []ValidationRecord) {
 	expectedValues := []string{}
 	expectedTTL := 0
 
-	// Prepare expected values and TTLs
+	// Aggregate expected values and determine ExpectedTTL
 	for _, record := range records {
 		value := record.Value
 
-		// Handle unqualified CNAME targets
+		// Handle unqualified CNAME targets by appending the zone name
 		if key.RecordType == "CNAME" && !strings.HasSuffix(value, ".") {
 			zoneName := strings.TrimRight(record.ZoneName, ".")
 			if zoneName != "" {
@@ -151,28 +158,44 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 
 		expectedValues = append(expectedValues, value)
 
-		// Determine Expected TTL
-		recordTTL := 0
+		// Determine ExpectedTTL
+		var recordTTL int
 		if record.TTL != nil && *record.TTL > 0 {
 			recordTTL = *record.TTL
+		} else if key.RecordType == "NS" && record.Name == "@" {
+			// For NS records at the zone apex, use zone's own SOA TTL
+			if zone, ok := zonesByName[key.ZoneName]; ok {
+				if zone.SoaTTL > 0 {
+					recordTTL = zone.SoaTTL
+				} else {
+					recordTTL = record.ZoneDefaultTTL
+				}
+			} else {
+				// Zone not found, fallback to zone's default TTL
+				level.Warn(logger).Log("msg", "Zone not found for NS record", "zone", key.ZoneName)
+				recordTTL = record.ZoneDefaultTTL
+			}
 		} else {
+			// For other records, use zone's default TTL
 			recordTTL = record.ZoneDefaultTTL
 		}
 
 		if expectedTTL == 0 {
 			expectedTTL = recordTTL
 		} else if expectedTTL != recordTTL {
-			// In case of multiple records with different TTLs, handle as needed
+			// Handle multiple TTLs within the same record group
 			level.Warn(logger).Log("msg", "Multiple TTLs for records with same FQDN and type", "fqdn", key.FQDN)
 		}
 	}
 
+	// Convert RecordType to DNS query type
 	qtype, ok := dns.StringToType[key.RecordType]
 	if !ok {
 		level.Error(logger).Log("msg", "Unknown record type", "type", key.RecordType)
 		discrepancy := Discrepancy{
 			FQDN:       key.FQDN,
 			RecordType: key.RecordType,
+			ZoneName:   key.ZoneName,
 			Expected:   expectedValues,
 			Message:    "Unknown record type",
 		}
@@ -182,18 +205,25 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 	var discrepancies []Discrepancy
 	var successfulValidations []ValidationRecord
 
+	// Query each authoritative nameserver
 	for _, server := range servers {
-		level.Debug(logger).Log("msg", "Validating records", "fqdn", key.FQDN, "type", key.RecordType, "expected_values", expectedValues, "server", server)
+		level.Debug(logger).Log(
+			"msg", "Validating records",
+			"fqdn", key.FQDN,
+			"type", key.RecordType,
+			"expected_values", expectedValues,
+			"server", server,
+		)
 		resp, err := queryDNSWithRetry(key.FQDN, qtype, server, 3)
 		if err != nil {
 			if resp != nil && resp.Rcode == dns.RcodeNameError {
-				// NXDOMAIN
+				// NXDOMAIN received, record is missing
 				level.Warn(logger).Log("msg", "NXDOMAIN received", "fqdn", key.FQDN, "server", server)
 				actualValues := []string{}
-				// Proceed to generate discrepancy
 				discrepancy := Discrepancy{
 					FQDN:        key.FQDN,
 					RecordType:  key.RecordType,
+					ZoneName:    key.ZoneName,
 					Expected:    expectedValues,
 					Actual:      actualValues,
 					ExpectedTTL: expectedTTL,
@@ -202,11 +232,12 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 				}
 				discrepancies = append(discrepancies, discrepancy)
 			} else {
-				// Other errors
+				// Other DNS query errors
 				level.Warn(logger).Log("msg", "DNS query error", "fqdn", key.FQDN, "server", server, "err", err)
 				discrepancy := Discrepancy{
 					FQDN:       key.FQDN,
 					RecordType: key.RecordType,
+					ZoneName:   key.ZoneName,
 					Expected:   expectedValues,
 					Server:     server,
 					Message:    fmt.Sprintf("DNS query error: %v", err),
@@ -217,10 +248,12 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 		}
 
 		if len(resp.Answer) == 0 {
+			// No answer section in DNS response
 			level.Warn(logger).Log("msg", "No DNS answer", "fqdn", key.FQDN, "server", server)
 			discrepancy := Discrepancy{
 				FQDN:        key.FQDN,
 				RecordType:  key.RecordType,
+				ZoneName:    key.ZoneName,
 				Expected:    expectedValues,
 				Actual:      []string{},
 				ExpectedTTL: expectedTTL,
@@ -270,6 +303,7 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 			discrepancy := Discrepancy{
 				FQDN:        key.FQDN,
 				RecordType:  key.RecordType,
+				ZoneName:    key.ZoneName,
 				Expected:    expectedValues,
 				Actual:      actualValues,
 				ExpectedTTL: expectedTTL,
@@ -278,11 +312,12 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 			}
 			discrepancies = append(discrepancies, discrepancy)
 		} else {
-			level.Info(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
+			level.Debug(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
 			if recordSuccessful {
 				validationRecord := ValidationRecord{
 					FQDN:        key.FQDN,
 					RecordType:  key.RecordType,
+					ZoneName:    key.ZoneName,
 					Expected:    expectedValues,
 					Actual:      actualValues,
 					ExpectedTTL: expectedTTL,
@@ -296,31 +331,4 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 	}
 
 	return discrepancies, successfulValidations
-}
-
-func stringSlicesEqualUnordered(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	aMap := make(map[string]int)
-	for _, val := range a {
-		aMap[val]++
-	}
-
-	for _, val := range b {
-		if count, exists := aMap[val]; !exists || count == 0 {
-			return false
-		} else {
-			aMap[val]--
-		}
-	}
-
-	for _, count := range aMap {
-		if count != 0 {
-			return false
-		}
-	}
-
-	return true
 }

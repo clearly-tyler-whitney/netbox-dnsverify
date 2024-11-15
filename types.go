@@ -52,6 +52,7 @@ type Zone struct {
 	Active        bool    `json:"active"`
 	RFC2317Prefix *string `json:"rfc2317_prefix"`
 	DefaultTTL    int     `json:"default_ttl"`
+	SoaTTL        int     `json:"soa_ttl"` // Added SoaTTL field
 	// Add other fields as needed
 }
 
