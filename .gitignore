@@ -26,9 +26,6 @@ go.work.sum
 .~lock.report.txt#
 *.txt
 config.yaml
-discrepancies.csv
-.~lock.discrepancies.csv#
-discrepancies.json
+*.report
 build/
 out/
-successful_validations.json

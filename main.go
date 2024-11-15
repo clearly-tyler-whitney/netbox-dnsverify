@@ -40,10 +40,10 @@ func main() {
 	pflag.StringVarP(&apiURL, "api-url", "u", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
 	pflag.StringVarP(&apiToken, "api-token", "t", "", "NetBox API token")
 	pflag.StringVarP(&apiTokenFile, "api-token-file", "T", "", "Path to the NetBox API token file")
-	pflag.StringVarP(&reportFile, "report-file", "r", "discrepancies.txt", "File to write the discrepancy report")
+	pflag.StringVarP(&reportFile, "report-file", "r", "bad.report", "File to write the discrepancy report")
 	pflag.StringVarP(&reportFormat, "report-format", "f", "table", "Format of the report (table, csv, json)")
 	pflag.StringVarP(&nsupdateFile, "nsupdate-file", "n", "nsupdate.txt", "File to write nsupdate commands")
-	pflag.BoolVarP(&ignoreSerialNumbers, "ignore-serial-numbers", "i", false, "Ignore serial numbers when comparing SOA records")
+	pflag.BoolVarP(&ignoreSerialNumbers, "ignore-serial-numbers", "i", true, "Ignore serial numbers when comparing SOA records")
 	pflag.StringVarP(&validateSOA, "validate-soa", "s", "false", "SOA record validation ('false', 'true', or 'only')")
 	pflag.StringVarP(&logLevel, "log-level", "l", "info", "Log level (debug, info, warn, error)")
 	pflag.StringVarP(&logFormat, "log-format", "L", "logfmt", "Log format (logfmt or json)")
@@ -51,13 +51,12 @@ func main() {
 	pflag.StringVarP(&viewFilter, "view", "v", "", "Filter by view name")
 	pflag.StringVarP(&nameserverFilter, "nameserver", "N", "", "Filter by nameserver")
 	pflag.BoolVarP(&recordSuccessful, "record-successful", "R", false, "Record successful validations")
-	pflag.StringVarP(&successfulReportFile, "successful-report-file", "S", "successful_validations.json", "File to write successful validations report")
+	pflag.StringVarP(&successfulReportFile, "successful-report-file", "S", "good.report", "File to write successful validations report")
 	pflag.BoolVarP(&showHelp, "help", "h", false, "Display help message")
 	pflag.Parse()
 
 	// Show help message if requested
 	if showHelp {
-		fmt.Println("Usage of netbox-dnsverify:")
 		fmt.Println("Usage of netbox-dnsverify:")
 		pflag.PrintDefaults()
 		os.Exit(0)

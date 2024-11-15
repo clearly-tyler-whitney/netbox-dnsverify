@@ -67,18 +67,18 @@ netbox-dnsverify [options]
 | `--api-url`                          | `-u`  | NetBox API root URL (e.g., `https://netbox.example.com/`)                                            |
 | `--api-token`                        | `-t`  | NetBox API token                                                                                     |
 | `--api-token-file`                   | `-T`  | Path to the NetBox API token file                                                                    |
-| `--report-file`                      | `-r`  | File to write the discrepancy report (default: `discrepancies.txt`)                                  |
+| `--report-file`                      | `-r`  | File to write the discrepancy report (default: `bad.report`)                                         |
 | `--report-format`                    | `-f`  | Format of the report (`table`, `csv`, `json`) (default: `table`)                                     |
 | `--nsupdate-file`                    | `-n`  | File to write `nsupdate` commands (default: `nsupdate.txt`)                                          |
-| `--ignore-serial-numbers`            | `-i`  | Ignore serial numbers when comparing SOA records                                                     |
+| `--ignore-serial-numbers`            | `-i`  | Ignore serial numbers when comparing SOA records (default: `true`)                                   |
 | `--validate-soa`                     | `-s`  | SOA record validation (`false`, `true`, or `only`) (default: `false`)                                |
 | `--log-level`                        | `-l`  | Log level (`debug`, `info`, `warn`, `error`) (default: `info`)                                       |
 | `--log-format`                       | `-L`  | Log format (`logfmt` or `json`) (default: `logfmt`)                                                  |
-| `--zone`                             | `-z`  | Filter by zone name                                                                      |
-| `--view`                             | `-v`  | Filter by view name                                                                      |
-| `--nameserver`                       | `-N`  | Filter by nameserver                                                                     |
+| `--zone`                             | `-z`  | Filter by zone name                                                                                  |
+| `--view`                             | `-v`  | Filter by view name                                                                                  |
+| `--nameserver`                       | `-N`  | Filter by nameserver                                                                                 |
 | `--record-successful`                | `-R`  | Record successful validations                                                                        |
-| `--successful-report-file`           | `-S`  | File to write successful validations report (default: `successful_validations.json`)                 |
+| `--successful-report-file`           | `-S`  | File to write successful validations report (default: `good.report`)                                 |
 | `--help`                             | `-h`  | Display help message                                                                                 |
 
 ### Environment Variables
@@ -97,14 +97,14 @@ Example `config.yaml`:
 ```yaml
 api_url: https://netbox.example.com/
 api_token: your_api_token
-report_file: discrepancies.json
+report_file: bad.report
 report_format: json
 validate_soa: true
 ignore_serial_numbers: true
 log_level: info
 log_format: json
 record_successful: true
-successful_report_file: successful_validations.json
+successful_report_file: good.report
 ```
 
 ## Examples
@@ -122,7 +122,7 @@ successful_report_file: successful_validations.json
      -u https://netbox.example.com/ \
      -t your_api_token \
      -d dns1.example.com,dns2.example.com \
-     -r discrepancies.csv \
+     -r bad.report \
      -f csv \
      -s true \
      -i \
