@@ -11,7 +11,7 @@ import (
 	"github.com/go-kit/log/level"
 )
 
-func generateNSUpdateScript(discrepancies []Discrepancy, nsupdatePath string, logger log.Logger) error {
+func generateNSUpdateScripts(discrepancies []Discrepancy, nsupdatePath string, logger log.Logger) error {
 	if len(discrepancies) == 0 {
 		level.Info(logger).Log("msg", "No discrepancies found; nsupdate scripts not generated")
 		return nil
@@ -23,6 +23,39 @@ func generateNSUpdateScript(discrepancies []Discrepancy, nsupdatePath string, lo
 		return fmt.Errorf("failed to create nsupdate directory: %v", err)
 	}
 
+	// Separate discrepancies into record mismatches and TTL mismatches
+	recordDiscrepancies := []Discrepancy{}
+	ttlDiscrepancies := []Discrepancy{}
+
+	for _, d := range discrepancies {
+		if recordsEqual(d.Expected, d.Actual) && d.ExpectedTTL != d.ActualTTL {
+			ttlDiscrepancies = append(ttlDiscrepancies, d)
+		} else {
+			recordDiscrepancies = append(recordDiscrepancies, d)
+		}
+	}
+
+	// Generate nsupdate scripts for record discrepancies
+	err = generateNSUpdateScriptForDiscrepancies(recordDiscrepancies, nsupdatePath, "nsupdate_records", logger)
+	if err != nil {
+		return err
+	}
+
+	// Generate nsupdate scripts for TTL discrepancies
+	err = generateNSUpdateScriptForDiscrepancies(ttlDiscrepancies, nsupdatePath, "nsupdate_ttls", logger)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func generateNSUpdateScriptForDiscrepancies(discrepancies []Discrepancy, nsupdatePath, filenamePrefix string, logger log.Logger) error {
+	if len(discrepancies) == 0 {
+		level.Info(logger).Log("msg", "No discrepancies found for", "type", filenamePrefix)
+		return nil
+	}
+
 	serverDiscrepancies := make(map[string][]Discrepancy)
 
 	for _, d := range discrepancies {
@@ -30,7 +63,7 @@ func generateNSUpdateScript(discrepancies []Discrepancy, nsupdatePath string, lo
 	}
 
 	for server, discrepancies := range serverDiscrepancies {
-		filename := filepath.Join(nsupdatePath, fmt.Sprintf("nsupdate_%s", server))
+		filename := filepath.Join(nsupdatePath, fmt.Sprintf("%s_%s", filenamePrefix, server))
 		file, err := os.Create(filename)
 		if err != nil {
 			level.Error(logger).Log("msg", "Failed to create nsupdate file", "file", filename, "err", err)
@@ -60,6 +93,16 @@ func generateNSUpdateScript(discrepancies []Discrepancy, nsupdatePath string, lo
 					}
 				}
 
+				// Determine if this is a TTL mismatch only
+				if stringSlicesEqualUnordered(expectedValues, actualValues) && d.ExpectedTTL != d.ActualTTL {
+					// TTL mismatch only, need to update TTL
+					for _, val := range expectedValues {
+						fmt.Fprintf(file, "update delete %s %s %s\n", d.FQDN, d.RecordType, val)
+						fmt.Fprintf(file, "update add %s %d %s %s\n", d.FQDN, d.ExpectedTTL, d.RecordType, val)
+					}
+					continue
+				}
+
 				// Delete unexpected records
 				for _, val := range actualValues {
 					if !stringInSlice(val, expectedValues) {
@@ -70,11 +113,7 @@ func generateNSUpdateScript(discrepancies []Discrepancy, nsupdatePath string, lo
 				// Add missing records
 				for _, val := range expectedValues {
 					if !stringInSlice(val, actualValues) {
-						ttl := d.ExpectedTTL
-						if ttl == 0 {
-							ttl = 3600 // Default TTL if not specified
-						}
-						fmt.Fprintf(file, "update add %s %d %s %s\n", d.FQDN, ttl, d.RecordType, val)
+						fmt.Fprintf(file, "update add %s %d %s %s\n", d.FQDN, d.ExpectedTTL, d.RecordType, val)
 					}
 				}
 
@@ -90,11 +129,7 @@ func generateNSUpdateScript(discrepancies []Discrepancy, nsupdatePath string, lo
 					expectedSOA.MName, expectedSOA.RName, expectedSOA.Serial, expectedSOA.Refresh, expectedSOA.Retry, expectedSOA.Expire, expectedSOA.Minimum)
 
 				fmt.Fprintf(file, "update delete %s SOA\n", d.FQDN)
-				ttl := d.ExpectedTTL
-				if ttl == 0 {
-					ttl = 3600 // Default TTL if not specified
-				}
-				fmt.Fprintf(file, "update add %s %d SOA %s\n", d.FQDN, ttl, soaValue)
+				fmt.Fprintf(file, "update add %s %d SOA %s\n", d.FQDN, d.ExpectedTTL, soaValue)
 
 			default:
 				// Handle other record types if necessary
@@ -116,4 +151,23 @@ func stringInSlice(str string, list []string) bool {
 		}
 	}
 	return false
+}
+
+func recordsEqual(expected, actual interface{}) bool {
+	switch expectedValues := expected.(type) {
+	case []string:
+		actualValues, ok := actual.([]string)
+		if !ok {
+			return false
+		}
+		return stringSlicesEqualUnordered(expectedValues, actualValues)
+	case SOARecord:
+		actualSOA, ok := actual.(SOARecord)
+		if !ok {
+			return false
+		}
+		return expectedValues == actualSOA
+	default:
+		return false
+	}
 }

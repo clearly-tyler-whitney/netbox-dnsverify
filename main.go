@@ -307,7 +307,7 @@ func main() {
 	}
 
 	// Generate NSUpdate Scripts per server
-	err = generateNSUpdateScript(discrepancies, nsupdatePath, logger)
+	err = generateNSUpdateScripts(discrepancies, nsupdatePath, logger)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to generate nsupdate scripts", "err", err)
 		os.Exit(1)
