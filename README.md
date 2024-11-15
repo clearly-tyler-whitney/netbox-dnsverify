@@ -67,7 +67,6 @@ netbox-dnsverify [options]
 | `--api-url`                          | `-u`  | NetBox API root URL (e.g., `https://netbox.example.com/`)                                            |
 | `--api-token`                        | `-t`  | NetBox API token                                                                                     |
 | `--api-token-file`                   | `-T`  | Path to the NetBox API token file                                                                    |
-| `--dns-servers`                      | `-d`  | Comma-separated list of DNS servers                                                                  |
 | `--report-file`                      | `-r`  | File to write the discrepancy report (default: `discrepancies.txt`)                                  |
 | `--report-format`                    | `-f`  | Format of the report (`table`, `csv`, `json`) (default: `table`)                                     |
 | `--nsupdate-file`                    | `-n`  | File to write `nsupdate` commands (default: `nsupdate.txt`)                                          |
@@ -75,9 +74,9 @@ netbox-dnsverify [options]
 | `--validate-soa`                     | `-s`  | SOA record validation (`false`, `true`, or `only`) (default: `false`)                                |
 | `--log-level`                        | `-l`  | Log level (`debug`, `info`, `warn`, `error`) (default: `info`)                                       |
 | `--log-format`                       | `-L`  | Log format (`logfmt` or `json`) (default: `logfmt`)                                                  |
-| `--zone`                             | `-z`  | Filter validations by zone name                                                                      |
-| `--view`                             | `-v`  | Filter validations by view name                                                                      |
-| `--nameserver`                       | `-N`  | Filter validations by nameserver                                                                     |
+| `--zone`                             | `-z`  | Filter by zone name                                                                      |
+| `--view`                             | `-v`  | Filter by view name                                                                      |
+| `--nameserver`                       | `-N`  | Filter by nameserver                                                                     |
 | `--record-successful`                | `-R`  | Record successful validations                                                                        |
 | `--successful-report-file`           | `-S`  | File to write successful validations report (default: `successful_validations.json`)                 |
 | `--help`                             | `-h`  | Display help message                                                                                 |
@@ -88,7 +87,6 @@ Environment variables can be used to set options. They are prefixed with `DNSVER
 
 - `DNSVERIFY_API_URL`
 - `DNSVERIFY_API_TOKEN`
-- `DNSVERIFY_DNS_SERVERS`
 
 ### Configuration File
 
@@ -99,7 +97,6 @@ Example `config.yaml`:
 ```yaml
 api_url: https://netbox.example.com/
 api_token: your_api_token
-dns_servers: dns1.example.com,dns2.example.com
 report_file: discrepancies.json
 report_format: json
 validate_soa: true
@@ -140,7 +137,7 @@ successful_report_file: successful_validations.json
    netbox-dnsverify -u https://netbox.example.com/ -t your_api_token -s only
    ```
 
-4. **Filter Validations by Zone and View**:
+4. **Filter by Zone and View**:
 
    ```bash
    netbox-dnsverify -u https://netbox.example.com/ -t your_api_token -z example.com -v internal

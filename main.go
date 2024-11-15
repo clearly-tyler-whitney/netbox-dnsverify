@@ -20,7 +20,6 @@ func main() {
 		apiURL               string
 		apiToken             string
 		apiTokenFile         string
-		dnsServers           string
 		reportFile           string
 		reportFormat         string
 		nsupdateFile         string
@@ -41,7 +40,6 @@ func main() {
 	pflag.StringVarP(&apiURL, "api-url", "u", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
 	pflag.StringVarP(&apiToken, "api-token", "t", "", "NetBox API token")
 	pflag.StringVarP(&apiTokenFile, "api-token-file", "T", "", "Path to the NetBox API token file")
-	pflag.StringVarP(&dnsServers, "dns-servers", "d", "", "Comma-separated list of DNS servers")
 	pflag.StringVarP(&reportFile, "report-file", "r", "discrepancies.txt", "File to write the discrepancy report")
 	pflag.StringVarP(&reportFormat, "report-format", "f", "table", "Format of the report (table, csv, json)")
 	pflag.StringVarP(&nsupdateFile, "nsupdate-file", "n", "nsupdate.txt", "File to write nsupdate commands")
@@ -49,9 +47,9 @@ func main() {
 	pflag.StringVarP(&validateSOA, "validate-soa", "s", "false", "SOA record validation ('false', 'true', or 'only')")
 	pflag.StringVarP(&logLevel, "log-level", "l", "info", "Log level (debug, info, warn, error)")
 	pflag.StringVarP(&logFormat, "log-format", "L", "logfmt", "Log format (logfmt or json)")
-	pflag.StringVarP(&zoneFilter, "zone", "z", "", "Filter validations by zone name")
-	pflag.StringVarP(&viewFilter, "view", "v", "", "Filter validations by view name")
-	pflag.StringVarP(&nameserverFilter, "nameserver", "N", "", "Filter validations by nameserver")
+	pflag.StringVarP(&zoneFilter, "zone", "z", "", "Filter by zone name")
+	pflag.StringVarP(&viewFilter, "view", "v", "", "Filter by view name")
+	pflag.StringVarP(&nameserverFilter, "nameserver", "N", "", "Filter by nameserver")
 	pflag.BoolVarP(&recordSuccessful, "record-successful", "R", false, "Record successful validations")
 	pflag.StringVarP(&successfulReportFile, "successful-report-file", "S", "successful_validations.json", "File to write successful validations report")
 	pflag.BoolVarP(&showHelp, "help", "h", false, "Display help message")
@@ -59,6 +57,7 @@ func main() {
 
 	// Show help message if requested
 	if showHelp {
+		fmt.Println("Usage of netbox-dnsverify:")
 		fmt.Println("Usage of netbox-dnsverify:")
 		pflag.PrintDefaults()
 		os.Exit(0)
@@ -110,7 +109,6 @@ func main() {
 	viper.SetDefault("api_url", apiURL)
 	viper.SetDefault("api_token", apiToken)
 	viper.SetDefault("api_token_file", apiTokenFile)
-	viper.SetDefault("dns_servers", dnsServers)
 	viper.SetDefault("report_file", reportFile)
 	viper.SetDefault("report_format", reportFormat)
 	viper.SetDefault("nsupdate_file", nsupdateFile)
@@ -138,7 +136,6 @@ func main() {
 	apiURL = viper.GetString("api_url")
 	apiToken = viper.GetString("api_token")
 	apiTokenFile = viper.GetString("api_token_file")
-	dnsServers = viper.GetString("dns_servers")
 	reportFile = viper.GetString("report_file")
 	reportFormat = viper.GetString("report_format")
 	nsupdateFile = viper.GetString("nsupdate_file")
@@ -195,11 +192,7 @@ func main() {
 	var servers []string
 	var nameservers []Nameserver
 
-	if dnsServers != "" {
-		// DNS servers are explicitly configured via flags/env/config
-		servers = splitAndTrim(dnsServers)
-		level.Info(logger).Log("msg", "Using configured DNS servers", "servers", servers)
-	} else {
+	{
 		// Fetch nameservers from NetBox API
 		level.Info(logger).Log("msg", "No DNS servers configured, fetching from NetBox Nameservers API")
 		nameserversEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/nameservers/")
