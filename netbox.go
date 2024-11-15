@@ -154,6 +154,7 @@ func getDNSRecords(apiURL, token string, logger log.Logger) ([]Record, error) {
 		record := &apiResponse.Results[i]
 		if record.Zone != nil {
 			record.ZoneName = record.Zone.Name
+			record.ZoneDefaultTTL = record.Zone.DefaultTTL
 			if record.Zone.View != nil {
 				record.ViewName = record.Zone.View.Name
 			}
@@ -208,4 +209,83 @@ func getNameservers(apiURL, token string, logger log.Logger) ([]Nameserver, erro
 	}
 
 	return nsResponse.Results, nil
+}
+
+func getAllZones(baseURL, token string, logger log.Logger) (map[int]Zone, error) {
+	zonesMap := make(map[int]Zone)
+	offset := 0
+	limit := 50
+
+	parsedBaseURL, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %v", err)
+	}
+
+	for {
+		parsedURL := *parsedBaseURL
+
+		query := parsedURL.Query()
+		query.Set("limit", fmt.Sprintf("%d", limit))
+		query.Set("offset", fmt.Sprintf("%d", offset))
+		parsedURL.RawQuery = query.Encode()
+
+		apiURL := parsedURL.String()
+
+		level.Debug(logger).Log("msg", "Requesting NetBox Zones API", "url", apiURL)
+
+		zones, err := getZones(apiURL, token, logger)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, zone := range zones {
+			zonesMap[zone.ID] = zone
+		}
+
+		if len(zones) < limit {
+			break
+		}
+		offset += limit
+	}
+	return zonesMap, nil
+}
+
+// Fetch Zones from NetBox
+func getZones(apiURL, token string, logger log.Logger) ([]Zone, error) {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Token "+token)
+
+	level.Debug(logger).Log("msg", "Sending request to NetBox for Zones", "method", req.Method, "url", req.URL.String())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		level.Error(logger).Log("msg", "Non-OK HTTP response from NetBox Zones API", "status_code", resp.StatusCode, "body", string(bodyBytes))
+		return nil, fmt.Errorf("NetBox Zones API returned status code %d", resp.StatusCode)
+	}
+
+	level.Debug(logger).Log("msg", "Received Zones response from NetBox")
+
+	var zonesResponse ZonesResponse
+	err = json.Unmarshal(bodyBytes, &zonesResponse)
+	if err != nil {
+		level.Error(logger).Log("msg", "Failed to parse JSON Zones response from NetBox", "err", err)
+		return nil, err
+	}
+
+	return zonesResponse.Results, nil
 }

@@ -12,21 +12,25 @@ import (
 )
 
 type Discrepancy struct {
-	FQDN       string      `json:"FQDN"`
-	RecordType string      `json:"RecordType"`
-	Expected   interface{} `json:"Expected"`
-	Actual     interface{} `json:"Actual"`
-	Server     string      `json:"Server"`
-	Message    string      `json:"Message,omitempty"`
+	FQDN        string      `json:"FQDN"`
+	RecordType  string      `json:"RecordType"`
+	Expected    interface{} `json:"Expected"`
+	Actual      interface{} `json:"Actual"`
+	ExpectedTTL int         `json:"ExpectedTTL"`
+	ActualTTL   int         `json:"ActualTTL"`
+	Server      string      `json:"Server"`
+	Message     string      `json:"Message,omitempty"`
 }
 
 type ValidationRecord struct {
-	FQDN       string      `json:"FQDN"`
-	RecordType string      `json:"RecordType"`
-	Expected   interface{} `json:"Expected"`
-	Actual     interface{} `json:"Actual"`
-	Server     string      `json:"Server"`
-	Message    string      `json:"Message,omitempty"`
+	FQDN        string      `json:"FQDN"`
+	RecordType  string      `json:"RecordType"`
+	Expected    interface{} `json:"Expected"`
+	Actual      interface{} `json:"Actual"`
+	ExpectedTTL int         `json:"ExpectedTTL"`
+	ActualTTL   int         `json:"ActualTTL"`
+	Server      string      `json:"Server"`
+	Message     string      `json:"Message,omitempty"`
 }
 
 type RecordKey struct {
@@ -129,8 +133,9 @@ func validateAllRecords(records []Record, servers []string, ignoreSerialNumbers 
 
 func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, ignoreSerialNumbers bool, logger log.Logger, recordSuccessful bool) ([]Discrepancy, []ValidationRecord) {
 	expectedValues := []string{}
+	expectedTTL := 0
 
-	// Prepare expected values
+	// Prepare expected values and TTLs
 	for _, record := range records {
 		value := record.Value
 
@@ -145,6 +150,21 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 		}
 
 		expectedValues = append(expectedValues, value)
+
+		// Determine Expected TTL
+		recordTTL := 0
+		if record.TTL != nil && *record.TTL > 0 {
+			recordTTL = *record.TTL
+		} else {
+			recordTTL = record.ZoneDefaultTTL
+		}
+
+		if expectedTTL == 0 {
+			expectedTTL = recordTTL
+		} else if expectedTTL != recordTTL {
+			// In case of multiple records with different TTLs, handle as needed
+			level.Warn(logger).Log("msg", "Multiple TTLs for records with same FQDN and type", "fqdn", key.FQDN)
+		}
 	}
 
 	qtype, ok := dns.StringToType[key.RecordType]
@@ -166,34 +186,58 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 		level.Debug(logger).Log("msg", "Validating records", "fqdn", key.FQDN, "type", key.RecordType, "expected_values", expectedValues, "server", server)
 		resp, err := queryDNSWithRetry(key.FQDN, qtype, server, 3)
 		if err != nil {
-			level.Warn(logger).Log("msg", "DNS query error", "fqdn", key.FQDN, "server", server, "err", err)
-			discrepancy := Discrepancy{
-				FQDN:       key.FQDN,
-				RecordType: key.RecordType,
-				Expected:   expectedValues,
-				Server:     server,
-				Message:    fmt.Sprintf("DNS query error: %v", err),
+			if resp != nil && resp.Rcode == dns.RcodeNameError {
+				// NXDOMAIN
+				level.Warn(logger).Log("msg", "NXDOMAIN received", "fqdn", key.FQDN, "server", server)
+				actualValues := []string{}
+				// Proceed to generate discrepancy
+				discrepancy := Discrepancy{
+					FQDN:        key.FQDN,
+					RecordType:  key.RecordType,
+					Expected:    expectedValues,
+					Actual:      actualValues,
+					ExpectedTTL: expectedTTL,
+					Server:      server,
+					Message:     "Record missing (NXDOMAIN)",
+				}
+				discrepancies = append(discrepancies, discrepancy)
+			} else {
+				// Other errors
+				level.Warn(logger).Log("msg", "DNS query error", "fqdn", key.FQDN, "server", server, "err", err)
+				discrepancy := Discrepancy{
+					FQDN:       key.FQDN,
+					RecordType: key.RecordType,
+					Expected:   expectedValues,
+					Server:     server,
+					Message:    fmt.Sprintf("DNS query error: %v", err),
+				}
+				discrepancies = append(discrepancies, discrepancy)
 			}
-			discrepancies = append(discrepancies, discrepancy)
 			continue
 		}
 
 		if len(resp.Answer) == 0 {
 			level.Warn(logger).Log("msg", "No DNS answer", "fqdn", key.FQDN, "server", server)
 			discrepancy := Discrepancy{
-				FQDN:       key.FQDN,
-				RecordType: key.RecordType,
-				Expected:   expectedValues,
-				Server:     server,
-				Message:    "Record missing",
+				FQDN:        key.FQDN,
+				RecordType:  key.RecordType,
+				Expected:    expectedValues,
+				Actual:      []string{},
+				ExpectedTTL: expectedTTL,
+				Server:      server,
+				Message:     "Record missing",
 			}
 			discrepancies = append(discrepancies, discrepancy)
 			continue
 		}
 
 		actualValues := []string{}
+		actualTTL := 0
 		for _, ans := range resp.Answer {
 			var val string
+			var ttl uint32
+			ttl = ans.Header().Ttl
+
 			switch rr := ans.(type) {
 			case *dns.A:
 				val = rr.A.String()
@@ -210,29 +254,41 @@ func validateRecordsForFQDN(key RecordKey, records []Record, servers []string, i
 				continue
 			}
 			actualValues = append(actualValues, val)
+
+			if actualTTL == 0 {
+				actualTTL = int(ttl)
+			} else if actualTTL != int(ttl) {
+				// Multiple TTLs found in DNS response
+				level.Warn(logger).Log("msg", "Multiple TTLs in DNS response", "fqdn", key.FQDN)
+			}
 		}
 
-		// Compare expected and actual values (unordered)
-		if !stringSlicesEqualUnordered(expectedValues, actualValues) {
-			level.Warn(logger).Log("msg", "Record values mismatch", "fqdn", key.FQDN, "server", server)
+		// Compare expected and actual values (unordered) and TTL
+		ttlMismatch := expectedTTL != actualTTL
+		if !stringSlicesEqualUnordered(expectedValues, actualValues) || ttlMismatch {
+			level.Warn(logger).Log("msg", "Record values or TTL mismatch", "fqdn", key.FQDN, "server", server)
 			discrepancy := Discrepancy{
-				FQDN:       key.FQDN,
-				RecordType: key.RecordType,
-				Expected:   expectedValues,
-				Actual:     actualValues,
-				Server:     server,
+				FQDN:        key.FQDN,
+				RecordType:  key.RecordType,
+				Expected:    expectedValues,
+				Actual:      actualValues,
+				ExpectedTTL: expectedTTL,
+				ActualTTL:   actualTTL,
+				Server:      server,
 			}
 			discrepancies = append(discrepancies, discrepancy)
 		} else {
 			level.Info(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
 			if recordSuccessful {
 				validationRecord := ValidationRecord{
-					FQDN:       key.FQDN,
-					RecordType: key.RecordType,
-					Expected:   expectedValues,
-					Actual:     actualValues,
-					Server:     server,
-					Message:    "Record validated successfully",
+					FQDN:        key.FQDN,
+					RecordType:  key.RecordType,
+					Expected:    expectedValues,
+					Actual:      actualValues,
+					ExpectedTTL: expectedTTL,
+					ActualTTL:   actualTTL,
+					Server:      server,
+					Message:     "Record validated successfully",
 				}
 				successfulValidations = append(successfulValidations, validationRecord)
 			}

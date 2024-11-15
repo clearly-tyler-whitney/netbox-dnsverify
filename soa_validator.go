@@ -101,6 +101,13 @@ func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool
 		return []Discrepancy{discrepancy}, nil
 	}
 
+	expectedTTL := 0
+	if record.TTL != nil && *record.TTL > 0 {
+		expectedTTL = *record.TTL
+	} else {
+		expectedTTL = record.ZoneDefaultTTL
+	}
+
 	var discrepancies []Discrepancy
 	var successfulValidations []ValidationRecord
 
@@ -108,15 +115,29 @@ func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool
 		level.Debug(logger).Log("msg", "Validating SOA record", "fqdn", record.FQDN, "server", server)
 		resp, err := queryDNSWithRetry(record.FQDN, dns.TypeSOA, server, 3)
 		if err != nil {
-			level.Warn(logger).Log("msg", "DNS query error", "fqdn", record.FQDN, "server", server, "err", err)
-			discrepancy := Discrepancy{
-				FQDN:       record.FQDN,
-				RecordType: "SOA",
-				Expected:   expectedSOA,
-				Server:     server,
-				Message:    fmt.Sprintf("DNS query error: %v", err),
+			if resp != nil && resp.Rcode == dns.RcodeNameError {
+				// NXDOMAIN
+				level.Warn(logger).Log("msg", "NXDOMAIN received", "fqdn", record.FQDN, "server", server)
+				discrepancy := Discrepancy{
+					FQDN:       record.FQDN,
+					RecordType: "SOA",
+					Expected:   *expectedSOA,
+					Server:     server,
+					Message:    "SOA record missing (NXDOMAIN)",
+				}
+				discrepancies = append(discrepancies, discrepancy)
+			} else {
+				// Other errors
+				level.Warn(logger).Log("msg", "DNS query error", "fqdn", record.FQDN, "server", server, "err", err)
+				discrepancy := Discrepancy{
+					FQDN:       record.FQDN,
+					RecordType: "SOA",
+					Expected:   *expectedSOA,
+					Server:     server,
+					Message:    fmt.Sprintf("DNS query error: %v", err),
+				}
+				discrepancies = append(discrepancies, discrepancy)
 			}
-			discrepancies = append(discrepancies, discrepancy)
 			continue
 		}
 
@@ -125,7 +146,7 @@ func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool
 			discrepancy := Discrepancy{
 				FQDN:       record.FQDN,
 				RecordType: "SOA",
-				Expected:   expectedSOA,
+				Expected:   *expectedSOA,
 				Server:     server,
 				Message:    "SOA record missing",
 			}
@@ -145,26 +166,32 @@ func validateSOARecord(record Record, servers []string, ignoreSerialNumbers bool
 					Minimum: rr.Minttl,
 				}
 
-				if !soaRecordsEqual(*expectedSOA, actualSOA, ignoreSerialNumbers) {
+				actualTTL := int(ans.Header().Ttl)
+
+				if !soaRecordsEqual(*expectedSOA, actualSOA, ignoreSerialNumbers) || expectedTTL != actualTTL {
 					level.Warn(logger).Log("msg", "SOA record mismatch", "fqdn", record.FQDN, "server", server)
 					discrepancy := Discrepancy{
-						FQDN:       record.FQDN,
-						RecordType: "SOA",
-						Expected:   *expectedSOA,
-						Actual:     actualSOA,
-						Server:     server,
+						FQDN:        record.FQDN,
+						RecordType:  "SOA",
+						Expected:    *expectedSOA,
+						Actual:      actualSOA,
+						ExpectedTTL: expectedTTL,
+						ActualTTL:   actualTTL,
+						Server:      server,
 					}
 					discrepancies = append(discrepancies, discrepancy)
 				} else {
 					level.Info(logger).Log("msg", "SOA record validated successfully", "fqdn", record.FQDN, "server", server)
 					if recordSuccessful {
 						validationRecord := ValidationRecord{
-							FQDN:       record.FQDN,
-							RecordType: "SOA",
-							Expected:   *expectedSOA,
-							Actual:     actualSOA,
-							Server:     server,
-							Message:    "SOA record validated successfully",
+							FQDN:        record.FQDN,
+							RecordType:  "SOA",
+							Expected:    *expectedSOA,
+							Actual:      actualSOA,
+							ExpectedTTL: expectedTTL,
+							ActualTTL:   actualTTL,
+							Server:      server,
+							Message:     "SOA record validated successfully",
 						}
 						successfulValidations = append(successfulValidations, validationRecord)
 					}

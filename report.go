@@ -32,7 +32,7 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 		writer := csv.NewWriter(file)
 		defer writer.Flush()
 
-		header := []string{"FQDN", "Type", "Expected", "Actual", "Server", "Message"}
+		header := []string{"FQDN", "Type", "Expected", "Actual", "Expected TTL", "Actual TTL", "Server", "Message"}
 		err := writer.Write(header)
 		if err != nil {
 			return err
@@ -41,7 +41,16 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 		for _, d := range discrepancies {
 			expected := fmt.Sprintf("%v", d.Expected)
 			actual := fmt.Sprintf("%v", d.Actual)
-			record := []string{d.FQDN, d.RecordType, expected, actual, d.Server, d.Message}
+			record := []string{
+				d.FQDN,
+				d.RecordType,
+				expected,
+				actual,
+				fmt.Sprintf("%d", d.ExpectedTTL),
+				fmt.Sprintf("%d", d.ActualTTL),
+				d.Server,
+				d.Message,
+			}
 			err := writer.Write(record)
 			if err != nil {
 				return err
@@ -50,8 +59,8 @@ func generateReport(discrepancies []Discrepancy, reportFile string, reportFormat
 	default:
 		// Default to table format
 		for _, d := range discrepancies {
-			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nServer: %s\nMessage: %s\n\n",
-				d.FQDN, d.RecordType, d.Expected, d.Actual, d.Server, d.Message)
+			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nExpected TTL: %d\nActual TTL: %d\nServer: %s\nMessage: %s\n\n",
+				d.FQDN, d.RecordType, d.Expected, d.Actual, d.ExpectedTTL, d.ActualTTL, d.Server, d.Message)
 		}
 	}
 
@@ -79,7 +88,7 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 		writer := csv.NewWriter(file)
 		defer writer.Flush()
 
-		header := []string{"FQDN", "Type", "Expected", "Actual", "Server", "Message"}
+		header := []string{"FQDN", "Type", "Expected", "Actual", "Expected TTL", "Actual TTL", "Server", "Message"}
 		err := writer.Write(header)
 		if err != nil {
 			return err
@@ -88,7 +97,16 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 		for _, v := range validations {
 			expected := fmt.Sprintf("%v", v.Expected)
 			actual := fmt.Sprintf("%v", v.Actual)
-			record := []string{v.FQDN, v.RecordType, expected, actual, v.Server, v.Message}
+			record := []string{
+				v.FQDN,
+				v.RecordType,
+				expected,
+				actual,
+				fmt.Sprintf("%d", v.ExpectedTTL),
+				fmt.Sprintf("%d", v.ActualTTL),
+				v.Server,
+				v.Message,
+			}
 			err := writer.Write(record)
 			if err != nil {
 				return err
@@ -97,8 +115,8 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 	default:
 		// Default to table format
 		for _, v := range validations {
-			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nServer: %s\nMessage: %s\n\n",
-				v.FQDN, v.RecordType, v.Expected, v.Actual, v.Server, v.Message)
+			fmt.Fprintf(file, "FQDN: %s\nType: %s\nExpected: %v\nActual: %v\nExpected TTL: %d\nActual TTL: %d\nServer: %s\nMessage: %s\n\n",
+				v.FQDN, v.RecordType, v.Expected, v.Actual, v.ExpectedTTL, v.ActualTTL, v.Server, v.Message)
 		}
 	}
 

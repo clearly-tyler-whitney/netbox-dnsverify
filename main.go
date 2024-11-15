@@ -22,7 +22,8 @@ func main() {
 		apiTokenFile         string
 		reportFile           string
 		reportFormat         string
-		nsupdateFile         string
+		nsupdateFile         string // Deprecated
+		nsupdatePath         string
 		ignoreSerialNumbers  bool
 		validateSOA          string
 		logLevel             string
@@ -34,7 +35,6 @@ func main() {
 		successfulReportFile string
 		showHelp             bool
 	)
-
 	// Define command-line flags with short versions
 	pflag.StringVarP(&configFile, "config", "c", "", "Path to the configuration file (default: ./config.yaml)")
 	pflag.StringVarP(&apiURL, "api-url", "u", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
@@ -42,7 +42,8 @@ func main() {
 	pflag.StringVarP(&apiTokenFile, "api-token-file", "T", "", "Path to the NetBox API token file")
 	pflag.StringVarP(&reportFile, "report-file", "r", "bad.report", "File to write the discrepancy report")
 	pflag.StringVarP(&reportFormat, "report-format", "f", "table", "Format of the report (table, csv, json)")
-	pflag.StringVarP(&nsupdateFile, "nsupdate-file", "n", "nsupdate.txt", "File to write nsupdate commands")
+	pflag.StringVarP(&nsupdateFile, "nsupdate-file", "n", "nsupdate.txt", "File to write nsupdate commands (deprecated)")
+	pflag.StringVarP(&nsupdatePath, "nsupdate-path", "p", "out", "Directory to write nsupdate commands per server")
 	pflag.BoolVarP(&ignoreSerialNumbers, "ignore-serial-numbers", "i", true, "Ignore serial numbers when comparing SOA records")
 	pflag.StringVarP(&validateSOA, "validate-soa", "s", "false", "SOA record validation ('false', 'true', or 'only')")
 	pflag.StringVarP(&logLevel, "log-level", "l", "info", "Log level (debug, info, warn, error)")
@@ -93,6 +94,7 @@ func main() {
 	viper.BindEnv("report_file")
 	viper.BindEnv("report_format")
 	viper.BindEnv("nsupdate_file")
+	viper.BindEnv("nsupdate_path")
 	viper.BindEnv("ignore_serial_numbers")
 	viper.BindEnv("validate_soa")
 	viper.BindEnv("log_level")
@@ -111,6 +113,7 @@ func main() {
 	viper.SetDefault("report_file", reportFile)
 	viper.SetDefault("report_format", reportFormat)
 	viper.SetDefault("nsupdate_file", nsupdateFile)
+	viper.SetDefault("nsupdate_path", nsupdatePath)
 	viper.SetDefault("ignore_serial_numbers", ignoreSerialNumbers)
 	viper.SetDefault("validate_soa", validateSOA)
 	viper.SetDefault("log_level", logLevel)
@@ -120,9 +123,6 @@ func main() {
 	viper.SetDefault("nameserver", nameserverFilter)
 	viper.SetDefault("record_successful", recordSuccessful)
 	viper.SetDefault("successful_report_file", successfulReportFile)
-
-	// Override defaults with config file values (if any)
-	// (Viper does this automatically when reading the config file)
 
 	// Override config values with environment variables (if set)
 	// (Viper does this automatically when environment variables are bound)
@@ -137,7 +137,8 @@ func main() {
 	apiTokenFile = viper.GetString("api_token_file")
 	reportFile = viper.GetString("report_file")
 	reportFormat = viper.GetString("report_format")
-	nsupdateFile = viper.GetString("nsupdate_file")
+	nsupdateFile = viper.GetString("nsupdate_file") // Deprecated
+	nsupdatePath = viper.GetString("nsupdate_path")
 	ignoreSerialNumbers = viper.GetBool("ignore_serial_numbers")
 	validateSOA = viper.GetString("validate_soa")
 	logLevel = viper.GetString("log_level")
@@ -249,6 +250,27 @@ func main() {
 
 	level.Info(logger).Log("msg", "Fetched DNS records from NetBox", "count", len(records))
 
+	// Fetch Zones
+	zonesEndpoint := resolveURL(parsedBaseURL, "/api/plugins/netbox-dns/zones/")
+	zonesMap, err := getAllZones(zonesEndpoint, apiToken, logger)
+	if err != nil {
+		level.Error(logger).Log("msg", "Failed to get DNS zones from NetBox", "err", err)
+		os.Exit(1)
+	}
+	level.Info(logger).Log("msg", "Fetched DNS zones from NetBox", "count", len(zonesMap))
+
+	// Assign ZoneDefaultTTL to each record
+	for i := range records {
+		record := &records[i]
+		if record.Zone != nil {
+			if zone, ok := zonesMap[record.Zone.ID]; ok {
+				record.ZoneDefaultTTL = zone.DefaultTTL
+			} else {
+				level.Warn(logger).Log("msg", "Zone not found in zones map", "zone_id", record.Zone.ID)
+			}
+		}
+	}
+
 	// Determine SOA validation mode
 	soaValidationMode := parseSOAValidationMode(validateSOA)
 
@@ -284,10 +306,10 @@ func main() {
 		}
 	}
 
-	// Generate NSUpdate Script
-	err = generateNSUpdateScript(discrepancies, nsupdateFile, logger)
+	// Generate NSUpdate Scripts per server
+	err = generateNSUpdateScript(discrepancies, nsupdatePath, logger)
 	if err != nil {
-		level.Error(logger).Log("msg", "Failed to generate nsupdate script", "err", err)
+		level.Error(logger).Log("msg", "Failed to generate nsupdate scripts", "err", err)
 		os.Exit(1)
 	}
 

@@ -7,20 +7,21 @@ type ApiResponse struct {
 }
 
 type Record struct {
-	ID          int        `json:"id"`
-	Type        string     `json:"type"`
-	Name        string     `json:"name"`
-	FQDN        string     `json:"fqdn"`
-	Value       string     `json:"value"`
-	TTL         int        `json:"ttl"`
-	Zone        *Zone      `json:"zone"`
-	ZoneName    string     // Extracted from Zone.Name
-	ViewName    string     // Extracted from Zone.View.Name
-	PTRRecord   *PTRRecord `json:"ptr_record"`
-	DisablePTR  bool       `json:"disable_ptr"`
-	Managed     bool       `json:"managed"`
-	Status      string     `json:"status"`
-	Description string     `json:"description"`
+	ID             int        `json:"id"`
+	Type           string     `json:"type"`
+	Name           string     `json:"name"`
+	FQDN           string     `json:"fqdn"`
+	Value          string     `json:"value"`
+	TTL            *int       `json:"ttl"` // TTL can be null
+	Zone           *Zone      `json:"zone"`
+	ZoneName       string     // Extracted from Zone.Name
+	ViewName       string     // Extracted from Zone.View.Name
+	ZoneDefaultTTL int        // From Zone.DefaultTTL
+	PTRRecord      *PTRRecord `json:"ptr_record"`
+	DisablePTR     bool       `json:"disable_ptr"`
+	Managed        bool       `json:"managed"`
+	Status         string     `json:"status"`
+	Description    string     `json:"description"`
 	// Add other fields as needed
 }
 
@@ -34,6 +35,13 @@ type SOARecord struct {
 	Minimum uint32 `json:"minimum"`
 }
 
+type ZonesResponse struct {
+	Count    int     `json:"count"`
+	Next     *string `json:"next"`
+	Previous *string `json:"previous"`
+	Results  []Zone  `json:"results"`
+}
+
 type Zone struct {
 	ID            int     `json:"id"`
 	URL           string  `json:"url"`
@@ -43,6 +51,7 @@ type Zone struct {
 	Status        string  `json:"status"`
 	Active        bool    `json:"active"`
 	RFC2317Prefix *string `json:"rfc2317_prefix"`
+	DefaultTTL    int     `json:"default_ttl"`
 	// Add other fields as needed
 }
 
