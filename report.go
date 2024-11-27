@@ -124,3 +124,55 @@ func generateSuccessfulReport(validations []ValidationRecord, reportFile string,
 
 	return nil
 }
+
+func generateMissingRecordsReport(missingRecords []MissingRecord, reportFile string, reportFormat string, logger log.Logger) error {
+	if len(missingRecords) == 0 {
+		level.Info(logger).Log("msg", "No missing records to report")
+		return nil
+	}
+
+	file, err := os.Create(reportFile)
+	if err != nil {
+		return fmt.Errorf("failed to create missing records report file: %v", err)
+	}
+	defer file.Close()
+
+	switch reportFormat {
+	case "json":
+		encoder := json.NewEncoder(file)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(missingRecords)
+	case "csv":
+		writer := csv.NewWriter(file)
+		defer writer.Flush()
+
+		header := []string{"FQDN", "Zone Name", "Type", "Value", "TTL", "Server"}
+		err := writer.Write(header)
+		if err != nil {
+			return err
+		}
+
+		for _, m := range missingRecords {
+			record := []string{
+				m.FQDN,
+				m.ZoneName,
+				m.RecordType,
+				m.Value,
+				fmt.Sprintf("%d", m.TTL),
+				m.Server,
+			}
+			err := writer.Write(record)
+			if err != nil {
+				return err
+			}
+		}
+	default:
+		// Default to table format
+		for _, m := range missingRecords {
+			fmt.Fprintf(file, "FQDN: %s\nZone Name: %s\nType: %s\nValue: %s\nTTL: %d\nServer: %s\n\n",
+				m.FQDN, m.ZoneName, m.RecordType, m.Value, m.TTL, m.Server)
+		}
+	}
+
+	return nil
+}

@@ -32,8 +32,12 @@ func main() {
 		nameserverFilter     string
 		recordSuccessful     bool
 		successfulReportFile string
+		missingReportFile    string
+		useAXFR              bool
+		tsigKeyFile          string
 		showHelp             bool
 	)
+
 	// Define command-line flags with short versions
 	pflag.StringVarP(&configFile, "config", "c", "", "Path to the configuration file (default: ./config.yaml)")
 	pflag.StringVarP(&apiURL, "api-url", "u", "", "NetBox API root URL (e.g., https://netbox.example.com/)")
@@ -51,6 +55,9 @@ func main() {
 	pflag.StringVarP(&nameserverFilter, "nameserver", "N", "", "Filter by nameserver")
 	pflag.BoolVarP(&recordSuccessful, "record-successful", "R", false, "Record successful validations")
 	pflag.StringVarP(&successfulReportFile, "successful-report-file", "S", "good.report", "File to write successful validations report")
+	pflag.StringVarP(&missingReportFile, "missing-report-file", "M", "missing.report", "File to write records found in DNS but missing from NetBox")
+	pflag.BoolVarP(&useAXFR, "use-axfr", "a", false, "Use AXFR zone transfer for validation")
+	pflag.StringVarP(&tsigKeyFile, "tsig-keyfile", "k", "", "Path to the TSIG keyfile for AXFR")
 	pflag.BoolVarP(&showHelp, "help", "h", false, "Display help message")
 	pflag.Parse()
 
@@ -101,6 +108,9 @@ func main() {
 	viper.BindEnv("nameserver")
 	viper.BindEnv("record_successful")
 	viper.BindEnv("successful_report_file")
+	viper.BindEnv("missing_report_file")
+	viper.BindEnv("use_axfr")
+	viper.BindEnv("tsig_keyfile")
 
 	// Set default values from flags (lowest precedence)
 	viper.SetDefault("config", configFile)
@@ -119,9 +129,9 @@ func main() {
 	viper.SetDefault("nameserver", nameserverFilter)
 	viper.SetDefault("record_successful", recordSuccessful)
 	viper.SetDefault("successful_report_file", successfulReportFile)
-
-	// Override config values with environment variables (if set)
-	// (Viper does this automatically when environment variables are bound)
+	viper.SetDefault("missing_report_file", missingReportFile)
+	viper.SetDefault("use_axfr", useAXFR)
+	viper.SetDefault("tsig_keyfile", tsigKeyFile)
 
 	// Override environment variables with command-line flags (highest precedence)
 	viper.BindPFlags(pflag.CommandLine)
@@ -143,6 +153,9 @@ func main() {
 	nameserverFilter = viper.GetString("nameserver")
 	recordSuccessful = viper.GetBool("record_successful")
 	successfulReportFile = viper.GetString("successful_report_file")
+	missingReportFile = viper.GetString("missing_report_file")
+	useAXFR = viper.GetBool("use_axfr")
+	tsigKeyFile = viper.GetString("tsig_keyfile")
 
 	// Load NetBox API token from file if specified
 	if apiTokenFile != "" && apiToken == "" {
@@ -277,20 +290,36 @@ func main() {
 	// Determine SOA validation mode
 	soaValidationMode := parseSOAValidationMode(validateSOA)
 
+	// Parse TSIG keyfile if provided
+	if tsigKeyFile != "" && useAXFR {
+		// Ensure the TSIG keyfile exists and is readable
+		if _, err := os.Stat(tsigKeyFile); os.IsNotExist(err) {
+			level.Error(logger).Log("msg", "TSIG keyfile does not exist", "file", tsigKeyFile)
+			os.Exit(1)
+		}
+	}
+
 	// Validate Records
 	var discrepancies []Discrepancy
 	var successfulValidations []ValidationRecord
+	var missingRecords []MissingRecord
 
-	if soaValidationMode != "only" {
-		// Validate all records except SOA
-		discrepancies, successfulValidations = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameserversList, zoneFilter, viewFilter, recordSuccessful, zonesByName)
-	}
+	if useAXFR {
+		// Perform validation using AXFR
+		discrepancies, successfulValidations, missingRecords = validateAllRecordsAXFR(records, servers, ignoreSerialNumbers, logger, nameserversList, zoneFilter, viewFilter, recordSuccessful, zonesByName, tsigKeyFile)
+	} else {
+		// Validate Records using individual queries
+		if soaValidationMode != "only" {
+			// Validate all records except SOA
+			discrepancies, successfulValidations = validateAllRecords(records, servers, ignoreSerialNumbers, logger, nameserversList, zoneFilter, viewFilter, recordSuccessful, zonesByName)
+		}
 
-	if soaValidationMode != "false" {
-		// Validate SOA records separately
-		soaDiscrepancies, soaSuccessfulValidations := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameserversList, recordSuccessful)
-		discrepancies = append(discrepancies, soaDiscrepancies...)
-		successfulValidations = append(successfulValidations, soaSuccessfulValidations...)
+		if soaValidationMode != "false" {
+			// Validate SOA records separately
+			soaDiscrepancies, soaSuccessfulValidations := validateSOARecords(records, servers, ignoreSerialNumbers, logger, nameserversList, recordSuccessful)
+			discrepancies = append(discrepancies, soaDiscrepancies...)
+			successfulValidations = append(successfulValidations, soaSuccessfulValidations...)
+		}
 	}
 
 	// Generate Discrepancy Report
@@ -305,6 +334,15 @@ func main() {
 		err = generateSuccessfulReport(successfulValidations, successfulReportFile, reportFormat, logger)
 		if err != nil {
 			level.Error(logger).Log("msg", "Failed to generate successful validations report", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	// Generate Missing Records Report if enabled and missing records are found
+	if missingReportFile != "" && len(missingRecords) > 0 {
+		err = generateMissingRecordsReport(missingRecords, missingReportFile, reportFormat, logger)
+		if err != nil {
+			level.Error(logger).Log("msg", "Failed to generate missing records report", "err", err)
 			os.Exit(1)
 		}
 	}

@@ -129,7 +129,6 @@ func validateAllRecords(
 }
 
 // validateRecordsForFQDN validates DNS records for a specific FQDN and RecordType against the authoritative nameservers.
-// It compares expected and actual DNS records, handles TTL inheritance, and returns any discrepancies found.
 func validateRecordsForFQDN(
 	key RecordKey,
 	records []Record,
@@ -312,7 +311,7 @@ func validateRecordsForFQDN(
 			}
 			discrepancies = append(discrepancies, discrepancy)
 		} else {
-			level.Debug(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
+			level.Info(logger).Log("msg", "Records validated successfully", "fqdn", key.FQDN, "type", key.RecordType, "server", server)
 			if recordSuccessful {
 				validationRecord := ValidationRecord{
 					FQDN:        key.FQDN,
@@ -331,4 +330,213 @@ func validateRecordsForFQDN(
 	}
 
 	return discrepancies, successfulValidations
+}
+
+// validateAllRecordsAXFR performs validation using AXFR zone transfers.
+func validateAllRecordsAXFR(
+	records []Record,
+	servers []string,
+	ignoreSerialNumbers bool,
+	logger log.Logger,
+	nameservers []Nameserver,
+	zoneFilter, viewFilter string,
+	recordSuccessful bool,
+	zonesByName map[string]Zone,
+	tsigKeyFile string,
+) ([]Discrepancy, []ValidationRecord, []MissingRecord) {
+	var wg sync.WaitGroup
+	discrepanciesChan := make(chan Discrepancy, len(records)*len(servers))
+	successfulChan := make(chan ValidationRecord, len(records)*len(servers))
+	missingChan := make(chan MissingRecord, len(records)*len(servers))
+
+	// Parse TSIG keyfile if provided
+	var tsigKey *TSIGKey
+	var err error
+	if tsigKeyFile != "" {
+		tsigKey, err = parseTSIGKeyFile(tsigKeyFile)
+		if err != nil {
+			level.Error(logger).Log("msg", "Failed to parse TSIG keyfile", "err", err)
+			return nil, nil, nil
+		}
+	}
+
+	// Build a map of expected records
+	expectedRecordsMap := make(map[string]Record)
+	for _, record := range records {
+		fqdnType := fmt.Sprintf("%s|%s", record.FQDN, strings.ToUpper(record.Type))
+		expectedRecordsMap[fqdnType] = record
+	}
+
+	// Iterate over each zone and perform AXFR
+	for zoneName, zone := range zonesByName {
+		// Apply zone filter
+		if zoneFilter != "" && zoneName != zoneFilter {
+			continue
+		}
+
+		wg.Add(1)
+		go func(zoneName string, zone Zone) {
+			defer wg.Done()
+
+			// Determine authoritative nameservers for this zone
+			var recordServers []string
+			for _, ns := range nameservers {
+				for _, nsZone := range ns.Zones {
+					if nsZone.Name == zoneName {
+						recordServers = append(recordServers, ns.Name)
+						break
+					}
+				}
+			}
+
+			if len(recordServers) == 0 {
+				level.Warn(logger).Log("msg", "No nameservers found for zone", "zone", zoneName)
+				return
+			}
+
+			// Perform AXFR on the first available server
+			server := recordServers[0]
+			level.Info(logger).Log("msg", "Performing AXFR", "zone", zoneName, "server", server)
+
+			axfrRecords, err := performAXFR(zoneName, server, tsigKey, logger)
+			if err != nil {
+				level.Error(logger).Log("msg", "AXFR failed", "zone", zoneName, "server", server, "err", err)
+				return
+			}
+
+			// Build actual records map
+			actualRecordsMap := make(map[string]dns.RR)
+			for _, rr := range axfrRecords {
+				fqdnType := fmt.Sprintf("%s|%s", rr.Header().Name, dns.TypeToString[rr.Header().Rrtype])
+				actualRecordsMap[fqdnType] = rr
+			}
+
+			// Compare expected and actual records
+			for key, expectedRecord := range expectedRecordsMap {
+				if !strings.HasSuffix(expectedRecord.FQDN, zoneName) {
+					continue
+				}
+
+				actualRR, exists := actualRecordsMap[key]
+				if !exists {
+					// Record missing in DNS
+					discrepancy := Discrepancy{
+						FQDN:        expectedRecord.FQDN,
+						RecordType:  expectedRecord.Type,
+						ZoneName:    zoneName,
+						Expected:    expectedRecord.Value,
+						Actual:      "",
+						ExpectedTTL: expectedRecord.ZoneDefaultTTL,
+						Server:      server,
+						Message:     "Record missing in DNS",
+					}
+					discrepanciesChan <- discrepancy
+					continue
+				}
+
+				// Compare values and TTLs
+				match, ttlMismatch := compareRecord(expectedRecord, actualRR)
+				if !match || ttlMismatch {
+					discrepancy := Discrepancy{
+						FQDN:        expectedRecord.FQDN,
+						RecordType:  expectedRecord.Type,
+						ZoneName:    zoneName,
+						Expected:    expectedRecord.Value,
+						Actual:      extractRRValue(actualRR),
+						ExpectedTTL: expectedRecord.ZoneDefaultTTL,
+						ActualTTL:   int(actualRR.Header().Ttl),
+						Server:      server,
+						Message:     "Record mismatch",
+					}
+					discrepanciesChan <- discrepancy
+					continue
+				}
+
+				if recordSuccessful {
+					validationRecord := ValidationRecord{
+						FQDN:        expectedRecord.FQDN,
+						RecordType:  expectedRecord.Type,
+						ZoneName:    zoneName,
+						Expected:    expectedRecord.Value,
+						Actual:      extractRRValue(actualRR),
+						ExpectedTTL: expectedRecord.ZoneDefaultTTL,
+						ActualTTL:   int(actualRR.Header().Ttl),
+						Server:      server,
+						Message:     "Record validated successfully",
+					}
+					successfulChan <- validationRecord
+				}
+			}
+
+			// Identify extra records in DNS not present in NetBox
+			for key, rr := range actualRecordsMap {
+				if _, exists := expectedRecordsMap[key]; !exists {
+					level.Warn(logger).Log("msg", "Extra record found in DNS not present in NetBox", "fqdn", rr.Header().Name, "type", dns.TypeToString[rr.Header().Rrtype])
+					missingRecord := MissingRecord{
+						FQDN:       rr.Header().Name,
+						RecordType: dns.TypeToString[rr.Header().Rrtype],
+						ZoneName:   zoneName,
+						Value:      extractRRValue(rr),
+						TTL:        int(rr.Header().Ttl),
+						Server:     server,
+					}
+					missingChan <- missingRecord
+				}
+			}
+
+		}(zoneName, zone)
+	}
+
+	wg.Wait()
+	close(discrepanciesChan)
+	close(successfulChan)
+	close(missingChan)
+
+	var allDiscrepancies []Discrepancy
+	for d := range discrepanciesChan {
+		allDiscrepancies = append(allDiscrepancies, d)
+	}
+
+	var successfulValidations []ValidationRecord
+	for v := range successfulChan {
+		successfulValidations = append(successfulValidations, v)
+	}
+
+	var missingRecords []MissingRecord
+	for m := range missingChan {
+		missingRecords = append(missingRecords, m)
+	}
+
+	return allDiscrepancies, successfulValidations, missingRecords
+}
+
+// compareRecord compares an expected Record from NetBox with an actual dns.RR from DNS.
+func compareRecord(expected Record, actualRR dns.RR) (match bool, ttlMismatch bool) {
+	expectedValue := expected.Value
+	actualValue := extractRRValue(actualRR)
+
+	match = strings.EqualFold(strings.TrimSpace(expectedValue), strings.TrimSpace(actualValue))
+	ttlMismatch = expected.ZoneDefaultTTL != int(actualRR.Header().Ttl)
+
+	return match, ttlMismatch
+}
+
+// extractRRValue extracts the value from a dns.RR record.
+func extractRRValue(rr dns.RR) string {
+	switch r := rr.(type) {
+	case *dns.A:
+		return r.A.String()
+	case *dns.AAAA:
+		return r.AAAA.String()
+	case *dns.CNAME:
+		return r.Target
+	case *dns.NS:
+		return r.Ns
+	case *dns.PTR:
+		return r.Ptr
+	case *dns.TXT:
+		return strings.Join(r.Txt, " ")
+	default:
+		return ""
+	}
 }

@@ -29,3 +29,4 @@ config.yaml
 *.report
 build/
 out/
+keyfile

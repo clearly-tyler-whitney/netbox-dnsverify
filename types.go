@@ -93,3 +93,12 @@ type Nameserver struct {
 	CustomFields map[string]interface{} `json:"custom_fields"`
 	Tenant       *string                `json:"tenant"`
 }
+
+type MissingRecord struct {
+	FQDN       string `json:"fqdn"`
+	RecordType string `json:"record_type"`
+	ZoneName   string `json:"zone_name"`
+	Value      string `json:"value"`
+	TTL        int    `json:"ttl"`
+	Server     string `json:"server"`
+}
